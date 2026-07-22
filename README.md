@@ -11,7 +11,6 @@ OBOX 蓝牙手柄 (VID=0x0A5C PID=0x4502) -> ViGEmBus Xbox360 中间件。
 ├── src/              # Rust 实现 (主项目)
 ├── docs/             # 文档
 │   └── HID_PROTOCOL.md  # HID 协议详细文档
-├── python/           # Python 参考实现 (已 gitignore,不入库)
 └── Cargo.toml
 ```
 
@@ -24,6 +23,7 @@ OBOX 蓝牙手柄 (VID=0x0A5C PID=0x4502) -> ViGEmBus Xbox360 中间件。
 
 ### 待实现
 
+- 振动 (Rumble) 反馈
 - Col03 Consumer 接口 (Back/Start/Guide)
 - 蓝牙断线自动重连
 - 配置文件 (死区、灵敏度、按键映射)
@@ -46,3 +46,11 @@ cargo run --release
 ## 协议文档
 
 详见 [docs/HID_PROTOCOL.md](docs/HID_PROTOCOL.md)。
+
+## 贡献者
+
+- **TRAE (by ByteDance)** — AI 编程助手，Rust 实现与架构设计
+
+## License
+
+MIT License，详见 [LICENSE](LICENSE)。
