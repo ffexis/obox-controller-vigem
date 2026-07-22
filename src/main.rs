@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
+use std::ffi::CString;
 use std::time::Duration;
-use vigem_client::{Client, TargetId, XGamepad, XButtons, Xbox360Wired};
+use vigem_client::{Client, TargetId, XButtons, XGamepad, Xbox360Wired};
 
 const VENDOR_ID: u16 = 0x0A5C;
 const PRODUCT_ID: u16 = 0x4502;
@@ -30,7 +31,9 @@ fn main() -> Result<()> {
         .context("Gamepad interface not found. Is the controller connected?")?;
     println!("[HID] Gamepad interface found");
 
-    let device = hid.open_path(&gamepad_path)
+    let path_cstr = CString::new(gamepad_path.as_bytes())
+        .context("Invalid device path")?;
+    let device = hid.open_path(&path_cstr)
         .context("Failed to open gamepad HID device")?;
     device.set_blocking_mode(false).ok();
     println!("[HID] Gamepad device opened");
@@ -58,19 +61,19 @@ fn main() -> Result<()> {
         let l2 = u16::from_le_bytes([buf[12], buf[13]]);
         let r2 = u16::from_le_bytes([buf[14], buf[15]]);
 
-        let mut xb = XButtons::from_bits_truncate(0);
+        let mut xb_raw: u16 = 0;
 
         for bit in 0..16 {
             if (buttons >> bit) & 1 != 0 {
-                if let Some(btn) = button_map(bit + 1) {
-                    xb |= btn;
+                if let Some(btn) = button_bit(bit + 1) {
+                    xb_raw |= btn;
                 }
             }
         }
 
         if hat < 8 {
-            for dpad_btn in hat_map(hat) {
-                xb |= dpad_btn;
+            for dpad in hat_buttons(hat) {
+                xb_raw |= dpad;
             }
         }
 
@@ -83,7 +86,7 @@ fn main() -> Result<()> {
         let rt = trigger_to_byte(r2);
 
         let report = XGamepad {
-            buttons: xb,
+            buttons: XButtons { raw: xb_raw },
             left_trigger: lt,
             right_trigger: rt,
             thumb_lx: float_to_short(lx_f),
@@ -98,43 +101,43 @@ fn main() -> Result<()> {
     }
 }
 
-fn find_gamepad_path(hid: &hidapi::HidApi) -> Option<hidapi::HidDeviceInfo> {
+fn find_gamepad_path(hid: &hidapi::HidApi) -> Option<String> {
     for dev in hid.device_list() {
         if dev.vendor_id() == VENDOR_ID
             && dev.product_id() == PRODUCT_ID
             && dev.usage_page() == 0x0001
             && dev.usage() == 0x0005
         {
-            return Some(dev.clone());
+            return Some(dev.path().to_string_lossy().into_owned());
         }
     }
     None
 }
 
-fn button_map(bit_num: u8) -> Option<XButtons> {
+fn button_bit(bit_num: u8) -> Option<u16> {
     match bit_num {
         1  => Some(XButtons::A),
         2  => Some(XButtons::B),
         4  => Some(XButtons::X),
         5  => Some(XButtons::Y),
-        7  => Some(XButtons::LEFT_SHOULDER),
-        8  => Some(XButtons::RIGHT_SHOULDER),
-        14 => Some(XButtons::LEFT_THUMB),
-        15 => Some(XButtons::RIGHT_THUMB),
+        7  => Some(XButtons::LB),
+        8  => Some(XButtons::RB),
+        14 => Some(XButtons::LTHUMB),
+        15 => Some(XButtons::RTHUMB),
         _  => None,
     }
 }
 
-fn hat_map(hat: u8) -> &'static [XButtons] {
+fn hat_buttons(hat: u8) -> &'static [u16] {
     match hat {
-        0 => &[XButtons::DPAD_UP],
-        1 => &[XButtons::DPAD_UP, XButtons::DPAD_RIGHT],
-        2 => &[XButtons::DPAD_RIGHT],
-        3 => &[XButtons::DPAD_DOWN, XButtons::DPAD_RIGHT],
-        4 => &[XButtons::DPAD_DOWN],
-        5 => &[XButtons::DPAD_DOWN, XButtons::DPAD_LEFT],
-        6 => &[XButtons::DPAD_LEFT],
-        7 => &[XButtons::DPAD_UP, XButtons::DPAD_LEFT],
+        0 => &[XButtons::UP],
+        1 => &[XButtons::UP, XButtons::RIGHT],
+        2 => &[XButtons::RIGHT],
+        3 => &[XButtons::DOWN, XButtons::RIGHT],
+        4 => &[XButtons::DOWN],
+        5 => &[XButtons::DOWN, XButtons::LEFT],
+        6 => &[XButtons::LEFT],
+        7 => &[XButtons::UP, XButtons::LEFT],
         _ => &[],
     }
 }
