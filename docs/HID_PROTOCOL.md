@@ -1,284 +1,435 @@
-# OBOX 蓝牙手柄 HID 协议文档
+# OBOX Bluetooth Gamepad HID Protocol Documentation
 
-> VID = `0x0A5C`  PID = `0x4502`(Broadcom BCM20702 蓝牙模组)
-> 连接方式: 蓝牙 HID over L2CAP
-> 文档用途: 供任意语言接入 ViGEmBus 重写中间件时参考
+> VID = `0x0A5C`  PID = `0x4502` (Broadcom BCM20702 Bluetooth module)
+> Connection: Bluetooth HID over L2CAP
+> Purpose: Reference for implementing ViGEmBus middleware in any language
 
 ---
 
-## 1. HID 接口枚举
+## 1. HID Interface Enumeration
 
-设备在 Windows 下枚举出 **4 个 HID Collection**(`hid.enumerate` 可见 4 个 path):
+The device exposes **4 HID collections** under a single Bluetooth HID connection:
 
-| Col | usage_page | usage | 含义 | 用途 |
-|-----|-----------|-------|------|------|
-| Col01 | 0x0001 (Generic Desktop) | 0x0005 (Gamepad) | **手柄主接口** | 按钮/摇杆/扳机/D-pad |
-| Col02 | 0x0001 (Generic Desktop) | 0x0020 (Mouse) | 鼠标(未用) | — |
-| Col03 | 0x000C (Consumer) | 0x0001 (Consumer Control) | **媒体键接口** | Back/Menu/Home |
-| Col04 | 0x0001 (Generic Desktop) | 0x0006 (Keyboard) | 键盘接口 | PrintScreen 等 |
+| Collection | Usage Page | Usage | Description |
+|------------|-----------|-------|-------------|
+| Col01 | Generic Desktop (0x01) | Gamepad (0x05) | Main gamepad input + LED/rumble output |
+| Col02 | Generic Desktop (0x01) | Mouse (0x02) | **Unused** — no reports observed |
+| Col03 | Consumer (0x0C) | Consumer Control (0x01) | System keys (Back, Menu, Home) |
+| Col04 | Keyboard (0x01) | Keyboard (0x06) | PrintScreen key only |
 
-**关键点:**
-- 只读 Col01 和 Col03 即可拿到所有手柄输入
-- Col04 被 Windows 键盘栈独占,`hidapi.open_path` 会报 read error,需用全局键盘钩子(如 pynput / Win32 `SetWindowsHookEx WH_KEYBOARD_LL`)读取
-- 蓝牙 HID 的 `path` 是 bytes,不要硬编码,运行时用 `enumerate(VENDOR, PRODUCT)` 按 `usage_page` + `usage` 筛选
+Each collection has its own Report ID and must be opened independently via HIDAPI.
 
-### 1.1 接口查找伪代码
+---
+
+## 2. Col01 Gamepad Interface (Report ID `0x07`)
+
+### Input Report — 16 bytes
+
+```
+Byte Offset  Size    Field
+───────────  ──────  ─────────────────────────────────
+0            1       Report ID (0x07)
+1-2          2       Buttons (16-bit bitmap, little-endian)
+3            1       Hat Switch (lower 4 bits)
+4-5          2       LX — Left Stick X (uint16, little-endian)
+6-7          2       LY — Left Stick Y (uint16, little-endian)
+8-9          2       RX — Right Stick X (uint16, little-endian)
+10-11        2       RY — Right Stick Y (uint16, little-endian)
+12-13        2       L2 — Left Trigger (uint16, little-endian)
+14-15        2       R2 — Right Trigger (uint16, little-endian)
+```
+
+### Button Mapping (16-bit bitmap)
+
+| Bit | Xbox 360 Button | Notes |
+|-----|----------------|-------|
+| B0 (bit 0) | — | Unused |
+| B1 (bit 1) | A | |
+| B2 (bit 2) | B | |
+| B3 (bit 3) | — | Unused |
+| B4 (bit 4) | X | |
+| B5 (bit 5) | Y | |
+| B6 (bit 6) | — | Unused |
+| B7 (bit 7) | LB (Left Bumper) | |
+| B8 (bit 8) | RB (Right Bumper) | |
+| B9 (bit 9) | — | Unused |
+| B10 (bit 10) | — | Unused |
+| B11 (bit 11) | — | Unused |
+| B12 (bit 12) | — | Unused |
+| B13 (bit 13) | — | Unused |
+| B14 (bit 14) | L3 (Left Stick Click) | |
+| B15 (bit 15) | R3 (Right Stick Click) | |
+
+### Hat Switch (D-Pad)
+
+The lower 4 bits of byte[3] encode the hat switch using standard HID clock positions:
+
+| Value | Direction |
+|-------|-----------|
+| 0 | Up |
+| 1 | Up-Right |
+| 2 | Right |
+| 3 | Down-Right |
+| 4 | Down |
+| 5 | Down-Left |
+| 6 | Left |
+| 7 | Up-Left |
+| 8 | Centered (released) |
+
+### Analog Sticks
+
+- Range: `0x0000` – `0xFFFF` (0 – 65535)
+- Center: `32768` (0x8000)
+- **Y-axis inversion required for XInput**: The device reports Y with up = high value. XInput expects up = low value. Apply: `y_out = 65535 - y_in`
+
+### Triggers (L2 / R2)
+
+- Range: `0x0000` – `0xFFFF` (0 – 65535)
+- For Xbox 360 emulation, compress to 8-bit: `trigger_out = value >> 8` (yields 0–255)
+- Apply threshold before output: if `value < TRIGGER_THRESHOLD`, output `0`
+
+---
+
+## 3. Col03 Consumer Interface (Report ID `0x0A`)
+
+### Input Report — 7 bytes
+
+```
+Byte Offset  Size    Field
+───────────  ──────  ─────────────────────────────────
+0            1       Report ID (0x0A)
+1-2          2       Usage Slot 1 (uint16, little-endian)
+3-4          2       Usage Slot 2 (uint16, little-endian)
+5-6          2       Usage Slot 3 (uint16, little-endian)
+```
+
+### Consumer Usage Codes
+
+| Usage Code | Meaning | Xbox 360 Mapping |
+|-----------|---------|-----------------|
+| `0x0224` | AC Back | Back |
+| `0x0040` | Menu | Start |
+| `0x0223` | AC Home | Guide (Home) |
+
+### State Change Detection
+
+The consumer report uses a **set-based** model:
+
+- When a key is pressed, its usage code appears in one of the 3 slots.
+- When released, the slot is set to `0x0000`.
+- Multiple keys can be held simultaneously (up to 3 slots).
+- **Do not** treat the report as a snapshot of all keys — detect transitions by comparing against the previous report's slot contents.
 
 ```python
-devices = hid.enumerate(0x0A5C, 0x4502)
-gamepad_path  = next(d["path"] for d in devices if d["usage_page"]==0x0001 and d["usage"]==0x0005)
-consumer_path = next(d["path"] for d in devices if d["usage_page"]==0x000C and d["usage"]==0x0001)
+# Pseudocode for state detection
+prev_usages = {0x0000, 0x0000, 0x0000}
+
+def on_consumer_report(data):
+    curr_usages = {data[1:3], data[3:5], data[5:7]}
+    pressed  = curr_usages - prev_usages   # newly appeared
+    released = prev_usages - curr_usages   # newly disappeared
+    prev_usages = curr_usages
 ```
+
+### Windows Home Key Issue
+
+On Windows, `0x0223` (AC Home) triggers the default browser launch via the system's consumer control handler. To prevent this:
+
+- Apply a registry fix to disable the AC Home hotkey, **or**
+- Intercept at the HID level before the OS consumer stack processes it.
+
+Registry path:
+
+```
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\PriorityControl
+```
+
+Set `Win32PrioritySeparation` or use a dedicated tool to suppress the Home consumer key.
 
 ---
 
-## 2. Col01 Gamepad 接口(Report ID 0x07)
+## 4. Col04 Keyboard Interface
 
-### 2.1 报告结构
+### Exclusive Access Problem
 
-**Report ID = `0x07`,固定 16 字节:**
+The Windows keyboard class driver (`kbdclass.sys`) **exclusively claims** the keyboard HID collection. Standard HIDAPI `hid_read()` calls will fail or return no data because the OS owns the read handle.
 
-| 偏移 | 长度 | 字段 | 说明 |
-|------|------|------|------|
-| [0]  | 1B   | Report ID | 固定 `0x07` |
-| [1-2] | 2B  | Buttons | 16 bit 位图,Little-Endian |
-| [3]  | 1B   | Hat + 保留 | 低 4 bit = Hat switch |
-| [4-5] | 2B  | LX | 左摇杆 X,Little-Endian |
-| [6-7] | 2B  | LY | 左摇杆 Y,Little-Endian |
-| [8-9] | 2B  | RX | 右摇杆 X,Little-Endian |
-| [10-11] | 2B | RY | 右摇杆 Y,Little-Endian |
-| [12-13] | 2B | L2 | 左扳机,Little-Endian |
-| [14-15] | 2B | R2 | 右扳机,Little-Endian |
+### Solution
 
-### 2.2 按钮位映射(Buttons,16 bit)
+Use a **global keyboard hook** (`SetWindowsHookEx` with `WH_KEYBOARD_LL`) to intercept the PrintScreen key:
 
-`buttons = data[1] | (data[2] << 8)`,bit 位从 0 起,物理按键编号 = bit 位 + 1。
+```c
+HHOOK hHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardProc, NULL, 0);
 
-| Bit | 编号 | 物理键 | Xbox360 映射 |
-|-----|------|--------|--------------|
-| 0   | B1   | 面键 1 | A |
-| 1   | B2   | 面键 2 | B |
-| 2   | B3   | —      | (未识别) |
-| 3   | B4   | 面键 3 | X |
-| 4   | B5   | 面键 4 | Y |
-| 5   | B6   | —      | (未识别) |
-| 6   | B7   | 左肩键 | LB |
-| 7   | B8   | 右肩键 | RB |
-| 8-12| B9-B13 | —    | (未识别) |
-| 13  | B14  | 左摇杆按下 | L3 (Left Thumb) |
-| 14  | B15  | 右摇杆按下 | R3 (Right Thumb) |
-| 15  | B16  | —      | (未识别) |
-
-**说明:**
-- 共识别出 8 个有效按钮:B1, B2, B4, B5, B7, B8, B14, B15
-- 面键 A/B/X/Y 的具体物理对应是推测的,实测如果按 A 显示成 B,直接交换映射表即可
-- bit 读取: `is_pressed = (buttons >> bit_pos) & 1`
-
-### 2.3 Hat switch(D-pad,4 bit)
-
-`hat = data[3] & 0x0F`,标准 HID 按钟点排列:
-
-| hat 值 | 方向 | Xbox360 按键 |
-|--------|------|--------------|
-| 0  | N (上)  | DPAD_UP |
-| 1  | NE (右上) | DPAD_UP + DPAD_RIGHT |
-| 2  | E (右)  | DPAD_RIGHT |
-| 3  | SE (右下) | DPAD_DOWN + DPAD_RIGHT |
-| 4  | S (下)  | DPAD_DOWN |
-| 5  | SW (左下) | DPAD_DOWN + DPAD_LEFT |
-| 6  | W (左)  | DPAD_LEFT |
-| 7  | NW (左上) | DPAD_UP + DPAD_LEFT |
-| 8 / 15 | 松开 | 无 |
-
-**关键点:** Xbox360 支持斜向同时按下两个方向键,NE/SE/SW/NW 应同时 `press` 两个 `DPAD_*`,不要只映射主方向。
-
-### 2.4 摇杆轴(LX/LY/RX/RY)
-
-- 范围: `0x0000` ~ `0xFFFF` (0 ~ 65535)
-- 中心值: `0x8000` (32768)
-- 死区建议: ±2000(中心附近抖动)
-- **Y 轴方向反转:** HID/DirectInput 中 Y 向下为正,但 XInput (Xbox360) 中 Y 向上为正。转发到 ViGEmBus 时 Y 轴必须取反。
-
-**归一化公式:**
-```
-delta = raw - 32768
-if abs(delta) < 2000:  # 死区
-    float_val = 0.0
-else:
-    float_val = delta / 32768
-    if Y轴: float_val = -float_val  # 反转
+LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    KBDLLHOOKSTRUCT *pKey = (KBDLLHOOKSTRUCT *)lParam;
+    if (pKey->vkCode == VK_SNAPSHOT) {  // PrintScreen = 0x2C
+        // Handle key press/release
+        return 1;  // Suppress default handling
+    }
+    return CallNextHookEx(hHook, nCode, wParam, lParam);
+}
 ```
 
-### 2.5 扳机(L2/R2)
+### Key Mapping
 
-- 范围: `0x0000` ~ `0xFFFF` (0 ~ 65535)
-- 松开 = 0,按到底 = 65535
-- Xbox360 扳机是单字节(0~255),需 `value / 257` 压缩
-- 阈值建议: 低于 100 视为 0(消除漂移)
+| Key | VK Code | Xbox 360 Mapping |
+|-----|---------|-----------------|
+| PrintScreen | `0x2C` (VK_SNAPSHOT) | (Application-defined) |
 
 ---
 
-## 3. Col03 Consumer 接口(Report ID 0x0A)
+## 5. Forwarding to ViGEmBus (Xbox 360)
 
-### 3.1 报告结构
-
-**Report ID = `0x0A`,固定 7 字节:**
-
-| 偏移 | 长度 | 字段 |
-|------|------|------|
-| [0]  | 1B   | Report ID = `0x0A` |
-| [1-2] | 2B  | Usage slot 0,Little-Endian |
-| [3-4] | 2B  | Usage slot 1,Little-Endian |
-| [5-6] | 2B  | Usage slot 2,Little-Endian |
-
-### 3.2 Usage 映射
-
-手柄上 3 个非 Gamepad 键走 Consumer 接口,**每次上报当前按下的 Usage 集合**(最多 3 个,松开时槽位为 `0x0000`)。
-
-| Consumer Usage | 物理键 | Xbox360 映射 | Windows 默认行为 |
-|----------------|--------|--------------|------------------|
-| `0x224` | Back(Android 返回图标) | BACK | 无 |
-| `0x040` | Menu(Android 菜单图标) | START | 无 |
-| `0x223` | Home(中心键,西瓜键位置) | GUIDE | **打开浏览器**(需注册表禁用) |
-
-### 3.3 状态变化检测(集合运算)
-
-**关键:** 用集合差集检测按下/释放,不要按下标逐个比对 —— 手柄可能把同一个 Usage 放到不同槽位,导致误触发 release+press。
-
-```python
-current_usages = {slot0, slot1, slot2} - {0}  # 过滤空槽
-pressed  = current_usages - prev_usages
-released = prev_usages - current_usages
-```
-
-### 3.4 Home 键浏览器行为禁用
-
-Home 键(Usage `0x223`)在 Windows 下默认映射为 `VK_BROWSER_HOME`,按下会打开浏览器。
-
-**禁用方法(注册表):** 删除 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\AppKey\7` 子键,重启 Explorer 生效。
-
-也可用项目内的 `disable_browser_home.reg` 一键导入。
-
----
-
-## 4. Col04 Keyboard 接口
-
-### 4.1 状态
-
-- 被 Windows 键盘栈独占,`hidapi.open_path` 会 read error
-- 用全局键盘钩子读取(如 pynput 的 `Listener`,或 Win32 `SetWindowsHookEx WH_KEYBOARD_LL`)
-
-### 4.2 已知键
-
-| vk | 物理键 | Xbox360 映射 |
-|----|--------|--------------|
-| `0x2C` | PrintScreen | (无对应 Xbox360 键,可不映射) |
-
-手柄上只有 1 个键走 Keyboard 接口(实测),且当前未映射到 Xbox360 任何按钮。
-
----
-
-## 5. 转发到 ViGEmBus(Xbox360)
-
-### 5.1 架构
+### Architecture
 
 ```
-Col01 Gamepad (HID)  ─┐
-Col03 Consumer (HID) ──┼──> ControllerState (线程安全) ──> OutputThread ──> ViGEmBus Xbox360
-Keyboard (全局钩子)  ─┘
+┌─────────────────┐
+│  Col01 Thread   │──┐
+│  (Gamepad 0x07) │  │
+└─────────────────┘  │
+                     ▼
+┌─────────────────┐  ┌──────────────────┐     ┌─────────────────┐
+│  Col03 Thread   │──│ ControllerState  │────▶│  Output Thread  │──▶ ViGEmBus
+│  (Consumer 0x0A)│  │  (mutex-locked)  │     │  (dirty-driven) │    (Xbox 360)
+└─────────────────┘  └──────────────────┘     └─────────────────┘
+                     ▲
+┌─────────────────┐  │
+│  Keyboard Hook  │──┘
+│  (PrintScreen)  │
+└─────────────────┘
 ```
 
-### 5.2 关键实现点
+- **3 input threads** read their respective HID interfaces concurrently.
+- All inputs merge into a shared `ControllerState` struct (protected by a mutex).
+- A single **output thread** polls `ControllerState` at `OUTPUT_INTERVAL` (5 ms).
+- Output is **dirty-driven**: only send to ViGEmBus when state has changed since last submission.
 
-1. **三路输入合并:** Col01 / Col03 / Keyboard 各开一个线程,写入同一个线程安全的 `ControllerState`(锁保护)
-2. **dirty 驱动输出:** 仅当状态变化时调用 `gamepad.update()`,静止时跳过省 CPU
-3. **断线重连:** HID `read` 抛异常后,3 秒重新 `enumerate` 查找 path,自动恢复
-4. **全量更新:** 每次 update 前 `gamepad.reset()`,再按当前状态重新 `press_button` / `set_joystick` / `set_trigger`
-
-### 5.3 vgamepad API 速查(Python)
+### vgamepad API Reference (Python)
 
 ```python
 import vgamepad as vg
 
 gamepad = vg.VX360Gamepad()
 
-# 按钮
+# Buttons
 gamepad.press_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_A)
 gamepad.release_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_A)
 
-# 摇杆 (float: -1.0 ~ 1.0)
-gamepad.left_joystick_float(x, y)   # y 向上为正
-gamepad.right_joystick_float(x, y)
+# Triggers (0-255)
+gamepad.left_trigger(value=128)
+gamepad.right_trigger(value=255)
 
-# 扳机 (0 ~ 255)
-gamepad.left_trigger(value)
-gamepad.right_trigger(value)
+# Sticks (-32768 to 32767)
+gamepad.left_joystick(x_value=0, y_value=0)
+gamepad.right_joystick(x_value=0, y_value=0)
 
-# 重置 + 提交
-gamepad.reset()
+# D-Pad
+gamepad.press_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_UP)
+
+# Submit
 gamepad.update()
 ```
 
-### 5.4 Xbox360 按钮枚举
+### Xbox 360 Button Enums
+
+| Enum | Xbox Button |
+|------|-------------|
+| `XUSB_GAMEPAD_DPAD_UP` | D-Pad Up |
+| `XUSB_GAMEPAD_DPAD_DOWN` | D-Pad Down |
+| `XUSB_GAMEPAD_DPAD_LEFT` | D-Pad Left |
+| `XUSB_GAMEPAD_DPAD_RIGHT` | D-Pad Right |
+| `XUSB_GAMEPAD_START` | Start |
+| `XUSB_GAMEPAD_BACK` | Back |
+| `XUSB_GAMEPAD_LEFT_THUMB` | L3 |
+| `XUSB_GAMEPAD_RIGHT_THUMB` | R3 |
+| `XUSB_GAMEPAD_LEFT_SHOULDER` | LB |
+| `XUSB_GAMEPAD_RIGHT_SHOULDER` | RB |
+| `XUSB_GAMEPAD_GUIDE` | Guide/Home |
+| `XUSB_GAMEPAD_A` | A |
+| `XUSB_GAMEPAD_B` | B |
+| `XUSB_GAMEPAD_X` | X |
+| `XUSB_GAMEPAD_Y` | Y |
+
+---
+
+## 6. Col01 Output Report (Report ID `0xB3`) — LED Control
+
+### Output Report — 12 bytes
 
 ```
-XUSB_GAMEPAD_A               = 0x1000
-XUSB_GAMEPAD_B               = 0x2000
-XUSB_GAMEPAD_X               = 0x4000
-XUSB_GAMEPAD_Y               = 0x8000
-XUSB_GAMEPAD_LEFT_SHOULDER   = 0x0100   (LB)
-XUSB_GAMEPAD_RIGHT_SHOULDER  = 0x0200   (RB)
-XUSB_GAMEPAD_LEFT_THUMB      = 0x0040   (L3)
-XUSB_GAMEPAD_RIGHT_THUMB     = 0x0080   (R3)
-XUSB_GAMEPAD_START           = 0x0010
-XUSB_GAMEPAD_BACK            = 0x0020
-XUSB_GAMEPAD_GUIDE           = 0x0004   (西瓜键)
-XUSB_GAMEPAD_DPAD_UP         = 0x0001
-XUSB_GAMEPAD_DPAD_DOWN       = 0x0002
-XUSB_GAMEPAD_DPAD_LEFT       = 0x0004
-XUSB_GAMEPAD_DPAD_RIGHT      = 0x0008
+Byte Offset  Size    Field
+───────────  ──────  ─────────────────────────────────
+0            1       Report ID (0xB3)
+1            1       Command Type: 0x01 = LED Control
+2            1       Red — Opcode
+3            1       Red — Brightness (0x00–0xFF)
+4            1       Green — Opcode
+5            1       Green — Brightness (0x00–0xFF)
+6            1       Blue — Opcode
+7            1       Blue — Brightness (0x00–0xFF)
+8            1       HOME LED — Opcode
+9            1       HOME LED — Brightness (0x00–0xFF)
+10           1       Consumer Area LED — Opcode
+11           1       Consumer Area LED — Brightness (0x00–0xFF)
 ```
 
-> 注意: `XUSB_GAMEPAD_GUIDE` 和 `XUSB_GAMEPAD_DPAD_LEFT` 的数值相同(0x0004),但它们在不同的位字段中(按钮 vs D-pad),vgamepad 内部会正确处理。在 C/C++ ViGEmBus API 中,它们是 `XUSB_REPORT.wButtons` 的不同 bit,不冲突。
+### LED Opcodes
+
+| Opcode | Meaning |
+|--------|---------|
+| `0x00` | No-op (ignore this LED channel) |
+| `0x01` | Set brightness to the value in the adjacent byte |
+| `0x02` | Turn off (brightness byte ignored) |
+
+### Example: Set Red to 50%, Green off, Blue to 100%
+
+```
+B3 01 01 80 02 00 01 FF 00 00 00 00
+```
+
+Breakdown:
+- `B3` — Report ID
+- `01` — LED command
+- `01 80` — Red: set brightness to 0x80 (128/255 ≈ 50%)
+- `02 00` — Green: off
+- `01 FF` — Blue: set brightness to 0xFF (100%)
+- `00 00` — HOME LED: no-op
+- `00 00` — Consumer LED: no-op
+
+### RGB Behavior
+
+- RGB LEDs operate in **persistent additive mode**: setting one channel does not affect others.
+- LED state persists until explicitly changed or the device is power-cycled.
+- To turn off all LEDs, send opcode `0x02` for each channel.
 
 ---
 
-## 6. 校准参数
+## 7. Col01 Output Report (Report ID `0xB3`) — Rumble Control
 
-| 参数 | 值 | 说明 |
-|------|----|------|
-| STICK_CENTER | 32768 (0x8000) | 摇杆中心 |
-| STICK_DEADZONE | 2000 | 死区,中心 ±2000 内视为 0 |
-| TRIGGER_THRESHOLD | 100 | 扳机阈值,低于此值视为 0 |
-| OUTPUT_INTERVAL | 5ms (200Hz) | 输出线程刷新间隔上限(实际 dirty 驱动) |
+### Output Report — 12 bytes
+
+```
+Byte Offset  Size    Field
+───────────  ──────  ─────────────────────────────────
+0            1       Report ID (0xB3)
+1            1       Command Type: 0x02 = Rumble Control
+2            1       Motor Enable (2-bit opcodes per motor)
+3            1       Left Motor Intensity (0x00–0xFF)
+4            1       Left Motor Duration (× 0.25s; 0 = pulse mode)
+5            1       Right Motor Intensity (0x00–0xFF)
+6            1       Right Motor Duration (× 0.25s; 0 = pulse mode)
+7-11         5       Reserved (0x00)
+```
+
+### Motor Enable Byte (byte[2])
+
+```
+Bits [1:0] = Left Motor Opcode
+Bits [3:2] = Right Motor Opcode
+```
+
+| 2-bit Opcode | Meaning |
+|-------------|---------|
+| `00` | No-op (do not change this motor's state) |
+| `01` | Start vibration |
+| `10` | Stop vibration |
+| `11` | Reserved |
+
+### Example: Start both motors at full intensity for 2 seconds
+
+```
+B3 02 05 FF 08 FF 08 00 00 00 00 00
+```
+
+Breakdown:
+- `B3` — Report ID
+- `02` — Rumble command
+- `05` — Motor enable: `0b00000101` → left=`01` (start), right=`01` (start)
+- `FF` — Left intensity: 255 (max)
+- `08` — Left duration: 8 × 0.25s = 2.0s
+- `FF` — Right intensity: 255 (max)
+- `08` — Right duration: 8 × 0.25s = 2.0s
+- `00 00 00 00 00` — Reserved
+
+### Vibration Modes
+
+| Mode | Condition | Behavior |
+|------|-----------|----------|
+| **Pulse mode** | Duration byte = `0x00` | Motor vibrates at specified intensity indefinitely until a stop command is received. Intensity is adjustable. |
+| **Timed mode** | Duration byte > `0x00` | Motor vibrates at **maximum intensity** for `duration × 0.25s`, then auto-stops. Intensity byte is ignored. |
+
+### Example: Stop left motor only
+
+```
+B3 02 02 00 00 00 00 00 00 00 00 00
+```
+
+- `02` — Motor enable: `0b00000010` → left=`10` (stop), right=`00` (no-op)
 
 ---
 
-## 7. 已知问题与坑
+## 8. Calibration Parameters
 
-1. **Home 键弹浏览器** — 见 §3.4,注册表禁用
-2. **Y 轴方向** — HID 与 XInput 相反,转发时必须取反,见 §2.4
-3. **D-pad 斜向** — Xbox360 支持同时按两个方向,见 §2.3
-4. **Keyboard 接口独占** — 见 §4.1,必须用全局钩子
-5. **Consumer Usage 槽位顺序** — 见 §3.3,必须用集合运算
-6. **hidapi 包冲突** — Python 下装 `hidapi` 包,不要同时装 `hid`,两者会冲突
-7. **path 是 bytes** — 蓝牙 HID 的 `path` 含字符串,不要硬编码,运行时枚举
-8. **ViGEmBus 驱动** — 必须先装 ViGEmBus Setup,否则 `VX360Gamepad()` 构造失败
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `STICK_CENTER` | `32768` | Analog stick center value (0x8000) |
+| `STICK_DEADZONE` | `2000` | Radial deadzone around center; values within this radius are clamped to 0 |
+| `TRIGGER_THRESHOLD` | `100` | Trigger values below this are treated as released |
+| `OUTPUT_INTERVAL` | `5 ms` | ViGEmBus output polling interval (200 Hz) |
+
+### Stick Processing Pseudocode
+
+```python
+def process_stick(raw_x, raw_y):
+    dx = raw_x - STICK_CENTER
+    dy = raw_y - STICK_CENTER
+    magnitude = math.sqrt(dx*dx + dy*dy)
+    if magnitude < STICK_DEADZONE:
+        return (0, 0)
+    # Normalize and scale to int16 range (-32768..32767)
+    scale = min(magnitude / 32768.0, 1.0)
+    nx = int((dx / magnitude) * scale * 32767)
+    ny = int((dy / magnitude) * scale * 32767)
+    # Invert Y for XInput
+    ny = -ny
+    return (nx, ny)
+```
 
 ---
 
-## 8. 快速验证清单
+## 9. Known Issues
 
-重写后按此顺序验证:
+| # | Issue | Details / Workaround |
+|---|-------|---------------------|
+| 1 | **Home key opens browser** | Windows maps Consumer `0x0223` (AC Home) to launch the default browser. Requires registry fix or HID-level interception to suppress. |
+| 2 | **Y-axis inversion** | Device reports Y-up as high value; XInput expects Y-up as low value. Must apply `y = 65535 - y` before forwarding. |
+| 3 | **D-Pad diagonal handling** | Hat switch reports diagonals as single values (1,3,5,7). Must decompose into two directional buttons for XInput (e.g., value 1 → UP + RIGHT). |
+| 4 | **Keyboard exclusive access** | Windows `kbdclass.sys` exclusively claims the keyboard collection. Cannot read via HIDAPI; must use `SetWindowsHookEx(WH_KEYBOARD_LL)`. |
+| 5 | **Consumer slot order** | The 3 usage slots do not guarantee fixed ordering. A key may appear in any slot across reports. Use set-based diffing, not positional comparison. |
+| 6 | **hidapi package conflict** | Python packages `hidapi` and `hid` both provide `hid` module. Ensure only one is installed: `pip uninstall hidapi` if using `hid`, or vice versa. |
+| 7 | **Device path is bytes** | On Windows, `hid.enumerate()` returns `path` as `bytes`, not `str`. Pass it directly to `hid.device().open_path()` without decoding. |
+| 8 | **ViGEmBus driver required** | The virtual Xbox 360 controller requires the [ViGEmBus](https://github.com/nefarius/ViGEmBus) kernel driver to be installed. Without it, `vgamepad` will fail to create the virtual device. |
 
-- [ ] 枚举到 4 个 HID 接口,筛出 Col01 + Col03
-- [ ] 读到 Report ID 0x07 (16B) 和 0x0A (7B)
-- [ ] 按 8 个 Gamepad 键,对应 bit 置位
-- [ ] 推 D-pad 4 个正方向,hat = 0/2/4/6
-- [ ] 推 D-pad 4 个斜方向,hat = 1/3/5/7,且 Xbox360 端同时亮两个方向
-- [ ] 推摇杆到四周极限,值接近 0 或 65535,Y 轴方向正确(向上 = 正)
-- [ ] 按 L2/R2 扳机,值 0 → 65535
-- [ ] 按 Back/Menu/Home,对应 Consumer Usage 0x224/0x040/0x223
-- [ ] Home 键不弹浏览器(注册表已禁用)
-- [ ] 拔掉手柄后重连,中间件 3 秒内自动恢复
-- [ ] 手柄静止时,CPU 占用接近 0(dirty 驱动生效)
+---
+
+## 10. Quick Verification Checklist
+
+- [ ] Device enumerates with VID `0x0A5C`, PID `0x4502`
+- [ ] 4 HID collections are visible (Gamepad, Mouse, Consumer, Keyboard)
+- [ ] Col01 input report is 16 bytes with Report ID `0x07`
+- [ ] Button presses register in the correct bit positions
+- [ ] Analog sticks center at ~32768 when released
+- [ ] Y-axis is inverted before XInput forwarding
+- [ ] Triggers compress from 16-bit to 8-bit correctly
+- [ ] Hat switch values 0–8 map to correct D-Pad states
+- [ ] Consumer report (ID `0x0A`) is 7 bytes with 3 usage slots
+- [ ] Back (`0x0224`), Menu (`0x0040`), Home (`0x0223`) detected via set-diff
+- [ ] Home key does NOT open browser after registry fix
+- [ ] PrintScreen captured via global keyboard hook
+- [ ] LED output report (ID `0xB3`, cmd `0x01`) changes LED colors
+- [ ] Rumble output report (ID `0xB3`, cmd `0x02`) activates motors
+- [ ] Pulse mode (duration=0) vibrates until stop command
+- [ ] Timed mode auto-stops after `duration × 0.25s`
+- [ ] ViGEmBus virtual Xbox 360 controller appears in Device Manager
+- [ ] Full input→output pipeline latency < 20 ms

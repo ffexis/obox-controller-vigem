@@ -1,6 +1,9 @@
 # Python 实现(参考用,不入库)
 python/
 
+# ROM dump (太大,不入库)
+rom/
+
 # Rust 构建产物
 /target/
 
