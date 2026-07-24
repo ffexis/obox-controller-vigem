@@ -1,4 +1,4 @@
-# OBOX Controller Driver
+# OBOX Controller ViGEm Driver
 
 **The world's first complete reverse engineering of the Snail OBox gamepad protocol.**
 
@@ -70,7 +70,7 @@ The full HID protocol specification is available in [docs/HID_PROTOCOL.md](docs/
 
 ---
 
-# OBOX Controller Driver
+# OBOX Controller ViGEm Driver
 
 **全球首个对蜗牛 OBox 手柄协议的完整逆向工程。**
 
