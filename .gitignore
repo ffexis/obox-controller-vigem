@@ -1,11 +1,19 @@
-# Python 实现(参考用,不入库)
-python/
-
 # ROM dump (太大,不入库)
 rom/
 
 # Rust 构建产物
 /target/
+
+# Python 缓存和测试脚本
+__pycache__/
+*.pyc
+python/test/
+
+# 构建产物/打包文件
+*.zip
+
+# 测试捕获数据
+python/test/captures.txt
 
 # 编辑器/IDE
 .vscode/

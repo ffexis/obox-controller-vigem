@@ -43,22 +43,22 @@ Byte Offset  Size    Field
 
 | Bit | Xbox 360 Button | Notes |
 |-----|----------------|-------|
-| B0 (bit 0) | — | Unused |
-| B1 (bit 1) | A | |
-| B2 (bit 2) | B | |
-| B3 (bit 3) | — | Unused |
-| B4 (bit 4) | X | |
-| B5 (bit 5) | Y | |
-| B6 (bit 6) | — | Unused |
-| B7 (bit 7) | LB (Left Bumper) | |
-| B8 (bit 8) | RB (Right Bumper) | |
+| B0 (bit 0) | A | |
+| B1 (bit 1) | B | |
+| B2 (bit 2) | — | Unused |
+| B3 (bit 3) | X | |
+| B4 (bit 4) | Y | |
+| B5 (bit 5) | — | Unused |
+| B6 (bit 6) | LB (Left Bumper) | |
+| B7 (bit 7) | RB (Right Bumper) | |
+| B8 (bit 8) | — | Unused |
 | B9 (bit 9) | — | Unused |
 | B10 (bit 10) | — | Unused |
 | B11 (bit 11) | — | Unused |
 | B12 (bit 12) | — | Unused |
-| B13 (bit 13) | — | Unused |
-| B14 (bit 14) | L3 (Left Stick Click) | |
-| B15 (bit 15) | R3 (Right Stick Click) | |
+| B13 (bit 13) | L3 (Left Stick Click) | |
+| B14 (bit 14) | R3 (Right Stick Click) | |
+| B15 (bit 15) | — | Unused |
 
 ### Hat Switch (D-Pad)
 
@@ -357,6 +357,24 @@ Breakdown:
 |------|-----------|----------|
 | **Pulse mode** | Duration byte = `0x00` | Motor vibrates at specified intensity indefinitely until a stop command is received. Intensity is adjustable. |
 | **Timed mode** | Duration byte > `0x00` | Motor vibrates at **maximum intensity** for `duration × 0.25s`, then auto-stops. Intensity byte is ignored. |
+
+### XInput State-Machine vs OBOX Pulse Mode
+
+XInput/ViGEmBus rumble is **state-machine based**: the host sends ONE packet when vibration starts, changes intensity, or stops. The virtual gamepad holds that state until explicitly changed. There is no need to resend the same rumble value repeatedly.
+
+OBOX pulse mode (duration=0) requires **continuous high-frequency sending** (~30ms interval) to sustain vibration. If you stop sending, the motor stops.
+
+These two models are fundamentally incompatible: a single state-change packet from XInput cannot sustain OBOX pulse-mode vibration.
+
+**Solution: Producer-Consumer heartbeat adapter**
+
+- **Producer**: The ViGEmBus notification callback updates a shared rumble state (`large_motor`, `small_motor`, `active` flag). This callback fires only when the host changes vibration state.
+- **Consumer**: A persistent background heartbeat thread polls the shared state every tick:
+  - If `active`: send pulse-mode command (duration=0) at ~30ms interval with current intensity.
+  - If just became inactive: send one stop command (byte[2]=0x0A), then idle.
+  - If idle: poll at ~10ms interval waiting for next activation.
+
+This bridges the state-machine model to the pulse-mode hardware requirement.
 
 ### Example: Stop left motor only
 

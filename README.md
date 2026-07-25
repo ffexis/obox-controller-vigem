@@ -36,6 +36,9 @@ This project is the **first and only complete reverse engineering** of the OBox 
 │   ├── hidhide.rs              # HidHide CLI integration
 │   ├── tray.rs                 # System tray, LED control, notifications
 │   └── boxicons-joystick-filled.ico  # Tray icon
+├── python/                     # Python implementation (testing/prototyping)
+│   ├── obox_middleware.py      # CLI-only driver (no tray)
+│   └── test/                   # Protocol exploration and test scripts
 ├── docs/                       # Protocol documentation
 │   ├── HID_PROTOCOL.md         # English
 │   └── HID_PROTOCOL_cn.md      # 中文
@@ -84,6 +87,17 @@ When launched by double-clicking the executable (no console), the driver runs in
 
 When launched from a terminal (with console), the driver runs in CLI mode with full output logging. Use `--cli` to force CLI mode.
 
+## Python Implementation
+
+The `python/` directory contains a Python port of the driver, primarily used for **protocol testing and rapid prototyping**. It is CLI-only (no system tray, no notifications).
+
+```bash
+pip install hidapi vgamepad pynput
+python python/obox_middleware.py              # Run driver (CLI mode)
+python python/obox_middleware.py --debug-keys  # Debug key input
+python python/obox_middleware.py --debug-output # Debug vibration/LED
+```
+
 ## Protocol Documentation
 
 The full HID protocol specification is available in [docs/HID_PROTOCOL.md](docs/HID_PROTOCOL.md) (English) and [docs/HID_PROTOCOL_cn.md](docs/HID_PROTOCOL_cn.md) (中文).
@@ -101,6 +115,8 @@ This project relies on the following excellent open-source components:
 - **[winit](https://github.com/rust-windowing/winit)** — Cross-platform window creation and management library
 - **[windows-rs](https://github.com/microsoft/windows-rs)** — Rust bindings for the Windows API by Microsoft
 - **[Boxicons](https://boxicons.com/)** — Beautiful open-source icons (used for tray icon)
+- **[hidapi (Python)](https://github.com/trezor/cython-hidapi)** — Python bindings for hidapi (used in Python implementation)
+- **[vgamepad](https://github.com/nefarius/vgamepad)** — Python wrapper for ViGEm client (used in Python implementation)
 
 ## Contributors
 
@@ -150,6 +166,9 @@ This project relies on the following excellent open-source components:
 │   ├── hidhide.rs              # HidHide CLI 集成
 │   ├── tray.rs                 # 系统托盘、LED控制、通知
 │   └── boxicons-joystick-filled.ico  # 托盘图标
+├── python/                     # Python 实现（测试/原型验证）
+│   ├── obox_middleware.py      # 纯 CLI 驱动（无托盘）
+│   └── test/                   # 协议探索和测试脚本
 ├── docs/                       # 协议文档
 │   ├── HID_PROTOCOL.md         # English
 │   └── HID_PROTOCOL_cn.md      # 中文
@@ -198,6 +217,17 @@ obox-controller-driver -h, --help         显示帮助
 
 从终端启动（有控制台）时，驱动以 CLI 模式运行，输出完整日志。使用 `--cli` 参数强制进入 CLI 模式。
 
+## Python 实现
+
+`python/` 目录包含驱动的 Python 移植版，主要用于**协议测试和快速原型验证**。纯 CLI 模式，无系统托盘和通知功能。
+
+```bash
+pip install hidapi vgamepad pynput
+python python/obox_middleware.py              # 运行驱动（CLI 模式）
+python python/obox_middleware.py --debug-keys  # 调试按键输入
+python python/obox_middleware.py --debug-output # 调试振动/LED
+```
+
 ## 协议文档
 
 完整的 HID 协议规范见 [docs/HID_PROTOCOL.md](docs/HID_PROTOCOL.md)（English）和 [docs/HID_PROTOCOL_cn.md](docs/HID_PROTOCOL_cn.md)（中文）。
@@ -215,6 +245,8 @@ obox-controller-driver -h, --help         显示帮助
 - **[winit](https://github.com/rust-windowing/winit)** — 跨平台窗口创建和管理库
 - **[windows-rs](https://github.com/microsoft/windows-rs)** — Microsoft 官方的 Windows API Rust 绑定
 - **[Boxicons](https://boxicons.com/)** — 精美的开源图标库（用于托盘图标）
+- **[hidapi (Python)](https://github.com/trezor/cython-hidapi)** — hidapi 的 Python 绑定（Python 实现使用）
+- **[vgamepad](https://github.com/nefarius/vgamepad)** — ViGEm 客户端的 Python 封装（Python 实现使用）
 
 ## 贡献者
 
