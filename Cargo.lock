@@ -1219,7 +1219,7 @@ checksum = "d079845b37af429bfe5dfa76e6d087d788031045b25cfc6fd898486fd9847666"
 
 [[package]]
 name = "obox-controller-driver"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "hidapi",

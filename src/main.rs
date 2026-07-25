@@ -26,19 +26,21 @@ const USAGE_BACK: u16 = 0x224;
 const USAGE_MENU: u16 = 0x040;
 const USAGE_HOME: u16 = 0x223;
 
+const XBUTTON_UP: u16 = 0x0001;
+const XBUTTON_DOWN: u16 = 0x0002;
+const XBUTTON_LEFT: u16 = 0x0004;
+const XBUTTON_RIGHT: u16 = 0x0008;
+const XBUTTON_START: u16 = 0x0010;
+const XBUTTON_BACK: u16 = 0x0020;
+const XBUTTON_L3: u16 = 0x0040;
+const XBUTTON_R3: u16 = 0x0080;
+const XBUTTON_LB: u16 = 0x0100;
+const XBUTTON_RB: u16 = 0x0200;
+const XBUTTON_GUIDE: u16 = 0x0400;
 const XBUTTON_A: u16 = 0x1000;
 const XBUTTON_B: u16 = 0x2000;
 const XBUTTON_X: u16 = 0x4000;
 const XBUTTON_Y: u16 = 0x8000;
-const XBUTTON_LB: u16 = 0x0100;
-const XBUTTON_RB: u16 = 0x0200;
-const XBUTTON_BACK: u16 = 0x0001;
-const XBUTTON_START: u16 = 0x0008;
-const XBUTTON_GUIDE: u16 = 0x0040;
-const XBUTTON_UP: u16 = 0x0010;
-const XBUTTON_DOWN: u16 = 0x0020;
-const XBUTTON_LEFT: u16 = 0x0040;
-const XBUTTON_RIGHT: u16 = 0x0080;
 
 struct ControllerState {
     gamepad_buttons: u16,
@@ -310,15 +312,29 @@ fn run_session(
     let state = Arc::new(Mutex::new(ControllerState::default()));
     let running = Arc::new(AtomicBool::new(true));
 
-    let rumble_last = Arc::new(Mutex::new((0u8, 0u8)));
-    let output_for_rumble = output_device.clone();
-    let rumble_last_cb = rumble_last.clone();
+    let rumble_state = Arc::new(Mutex::new(RumbleState::default()));
+    let rumble_stop = Arc::new(AtomicBool::new(false));
+
+    let rumble_state_cb = rumble_state.clone();
     let rumble_thread = gamepad
         .request_notification()
         .context("Failed to request ViGEmBus notification")?
         .spawn_thread(move |_, notif: XNotification| {
-            handle_rumble(&output_for_rumble, &rumble_last_cb, notif.large_motor, notif.small_motor);
+            let mut rs = rumble_state_cb.lock().unwrap();
+            rs.large = notif.large_motor;
+            rs.small = notif.small_motor;
+            rs.active = notif.large_motor > 0 || notif.small_motor > 0;
         });
+
+    let rumble_state_hb = rumble_state.clone();
+    let rumble_stop_hb = rumble_stop.clone();
+    let output_for_hb = output_device.clone();
+    let heartbeat_handle = thread::Builder::new()
+        .name("rumble-heartbeat".into())
+        .spawn(move || {
+            rumble_heartbeat_loop(&output_for_hb, &rumble_state_hb, &rumble_stop_hb);
+        })
+        .context("Failed to spawn rumble heartbeat thread")?;
 
     let state_for_consumer = state.clone();
     let running_for_consumer = running.clone();
@@ -377,19 +393,9 @@ fn run_session(
     tray::send_toast("OBOX Controller", "Disconnected");
 
     running.store(false, Ordering::SeqCst);
+    rumble_stop.store(true, Ordering::SeqCst);
 
     let _ = gamepad.update(&XGamepad::default());
-
-    {
-        let mut cmd = [0u8; 13];
-        cmd[0] = REPORT_ID_OUTPUT;
-        cmd[1] = 0x02;
-        cmd[2] = 0x0A;
-        if let Ok(dev) = output_device.lock() {
-            let _ = dev.write(&cmd);
-        }
-    }
-
     let _ = gamepad.unplug();
 
     if let Some((out_ptr, status, _)) = &tray_state {
@@ -400,6 +406,7 @@ fn run_session(
     }
 
     drop(rumble_thread);
+    let _ = heartbeat_handle.join();
     let _ = consumer_handle.join();
 
     Err(anyhow::anyhow!("Controller disconnected: {}", disconnect_reason))
@@ -465,11 +472,36 @@ fn consumer_usage_to_xbox(usage: u16) -> Option<u16> {
     }
 }
 
+fn apply_deadzone(val: u16) -> i16 {
+    let delta = val as i32 - STICK_CENTER;
+    if delta.abs() < STICK_DEADZONE {
+        return 0;
+    }
+    if delta > 0 {
+        ((delta - STICK_DEADZONE) * 32767 / (32767 - STICK_DEADZONE)) as i16
+    } else {
+        ((delta + STICK_DEADZONE) * 32767 / (32768 - STICK_DEADZONE)) as i16
+    }
+}
+
+fn apply_deadzone_y(val: u16) -> i16 {
+    -apply_deadzone(val)
+}
+
+fn apply_trigger(val: u16) -> u8 {
+    if val < TRIGGER_THRESHOLD {
+        0
+    } else {
+        (val >> 8).min(255) as u8
+    }
+}
+
 fn update_gamepad_state(state: &Arc<Mutex<ControllerState>>, buf: &[u8]) {
     let mut s = state.lock().unwrap();
 
-    let dpad_raw = buf[1];
-    let dpad = match dpad_raw {
+    let buttons = u16::from_le_bytes([buf[1], buf[2]]);
+    let hat = buf[3] & 0x0F;
+    let dpad = match hat {
         0 => XBUTTON_UP,
         1 => XBUTTON_UP | XBUTTON_RIGHT,
         2 => XBUTTON_RIGHT,
@@ -483,44 +515,22 @@ fn update_gamepad_state(state: &Arc<Mutex<ControllerState>>, buf: &[u8]) {
 
     let mut btns = dpad;
 
-    if (buf[2] & 0x01) != 0 { btns |= XBUTTON_A; }
-    if (buf[2] & 0x02) != 0 { btns |= XBUTTON_B; }
-    if (buf[2] & 0x04) != 0 { btns |= XBUTTON_X; }
-    if (buf[2] & 0x08) != 0 { btns |= XBUTTON_Y; }
-    if (buf[2] & 0x10) != 0 { btns |= XBUTTON_LB; }
-    if (buf[2] & 0x20) != 0 { btns |= XBUTTON_RB; }
+    if (buttons & (1 << 0)) != 0 { btns |= XBUTTON_A; }
+    if (buttons & (1 << 1)) != 0 { btns |= XBUTTON_B; }
+    if (buttons & (1 << 3)) != 0 { btns |= XBUTTON_X; }
+    if (buttons & (1 << 4)) != 0 { btns |= XBUTTON_Y; }
+    if (buttons & (1 << 6)) != 0 { btns |= XBUTTON_LB; }
+    if (buttons & (1 << 7)) != 0 { btns |= XBUTTON_RB; }
+    if (buttons & (1 << 13)) != 0 { btns |= XBUTTON_L3; }
+    if (buttons & (1 << 14)) != 0 { btns |= XBUTTON_R3; }
 
-    let lx_raw = i32::from_le_bytes([buf[3], buf[4], 0, 0]) - STICK_CENTER;
-    let ly_raw = i32::from_le_bytes([buf[5], buf[6], 0, 0]) - STICK_CENTER;
-    let rx_raw = i32::from_le_bytes([buf[7], buf[8], 0, 0]) - STICK_CENTER;
-    let ry_raw = i32::from_le_bytes([buf[9], buf[10], 0, 0]) - STICK_CENTER;
+    let lx = apply_deadzone(u16::from_le_bytes([buf[4], buf[5]]));
+    let ly = apply_deadzone_y(u16::from_le_bytes([buf[6], buf[7]]));
+    let rx = apply_deadzone(u16::from_le_bytes([buf[8], buf[9]]));
+    let ry = apply_deadzone_y(u16::from_le_bytes([buf[10], buf[11]]));
 
-    let lt_raw = u16::from_le_bytes([buf[11], buf[12]]);
-    let rt_raw = u16::from_le_bytes([buf[13], buf[14]]);
-
-    let lx = if lx_raw.abs() < STICK_DEADZONE { 0 } else {
-        ((lx_raw + if lx_raw > 0 { STICK_DEADZONE } else { -STICK_DEADZONE }) * 32767 / (32768 - STICK_DEADZONE)) as i16
-    };
-
-    let ly = if ly_raw.abs() < STICK_DEADZONE { 0 } else {
-        (-((ly_raw + if ly_raw > 0 { STICK_DEADZONE } else { -STICK_DEADZONE }) * 32767 / (32768 - STICK_DEADZONE))) as i16
-    };
-
-    let rx = if rx_raw.abs() < STICK_DEADZONE { 0 } else {
-        ((rx_raw + if rx_raw > 0 { STICK_DEADZONE } else { -STICK_DEADZONE }) * 32767 / (32768 - STICK_DEADZONE)) as i16
-    };
-
-    let ry = if ry_raw.abs() < STICK_DEADZONE { 0 } else {
-        (-((ry_raw + if ry_raw > 0 { STICK_DEADZONE } else { -STICK_DEADZONE }) * 32767 / (32768 - STICK_DEADZONE))) as i16
-    };
-
-    let lt = if lt_raw < TRIGGER_THRESHOLD { 0 } else {
-        ((lt_raw - TRIGGER_THRESHOLD) * 255 / (65535 - TRIGGER_THRESHOLD)) as u8
-    };
-
-    let rt = if rt_raw < TRIGGER_THRESHOLD { 0 } else {
-        ((rt_raw - TRIGGER_THRESHOLD) * 255 / (65535 - TRIGGER_THRESHOLD)) as u8
-    };
+    let lt = apply_trigger(u16::from_le_bytes([buf[12], buf[13]]));
+    let rt = apply_trigger(u16::from_le_bytes([buf[14], buf[15]]));
 
     if s.gamepad_buttons != btns || s.lt != lt || s.rt != rt ||
        s.thumb_lx != lx || s.thumb_ly != ly || s.thumb_rx != rx || s.thumb_ry != ry {
@@ -535,37 +545,62 @@ fn update_gamepad_state(state: &Arc<Mutex<ControllerState>>, buf: &[u8]) {
     }
 }
 
-fn handle_rumble(
-    output: &Arc<Mutex<hidapi::HidDevice>>,
-    last: &Arc<Mutex<(u8, u8)>>,
+#[derive(Default)]
+struct RumbleState {
     large: u8,
     small: u8,
+    active: bool,
+}
+
+fn rumble_heartbeat_loop(
+    output: &Arc<Mutex<hidapi::HidDevice>>,
+    state: &Arc<Mutex<RumbleState>>,
+    stop: &AtomicBool,
 ) {
-    {
-        let mut last_val = last.lock().unwrap();
-        if last_val.0 == large && last_val.1 == small {
-            return;
+    let mut last_was_active = false;
+
+    while !stop.load(Ordering::SeqCst) {
+        let (large, small, active) = {
+            let rs = state.lock().unwrap();
+            (rs.large, rs.small, rs.active)
+        };
+
+        if active {
+            let mut cmd = [0u8; 13];
+            cmd[0] = REPORT_ID_OUTPUT;
+            cmd[1] = 0x02;
+            let mut enable: u8 = 0;
+            if large > 0 { enable |= 0x01; }
+            if small > 0 { enable |= 0x04; }
+            cmd[2] = enable;
+            cmd[3] = large;
+            cmd[4] = 0;
+            cmd[5] = small;
+            cmd[6] = 0;
+            if let Ok(dev) = output.lock() {
+                let _ = dev.write(&cmd);
+            }
+            last_was_active = true;
+            thread::sleep(Duration::from_millis(30));
+        } else {
+            if last_was_active {
+                let mut cmd = [0u8; 13];
+                cmd[0] = REPORT_ID_OUTPUT;
+                cmd[1] = 0x02;
+                cmd[2] = 0x0A;
+                if let Ok(dev) = output.lock() {
+                    let _ = dev.write(&cmd);
+                }
+                last_was_active = false;
+            }
+            thread::sleep(Duration::from_millis(10));
         }
-        *last_val = (large, small);
     }
 
     let mut cmd = [0u8; 13];
     cmd[0] = REPORT_ID_OUTPUT;
     cmd[1] = 0x02;
-
-    if large == 0 && small == 0 {
-        cmd[2] = 0x0A;
-    } else {
-        let mut enable: u8 = 0;
-        if large > 0 { enable |= 0x01; }
-        if small > 0 { enable |= 0x04; }
-        cmd[2] = enable;
-        cmd[3] = large;
-        cmd[4] = 0;
-        cmd[5] = small;
-        cmd[6] = 0;
-    }
-
+    cmd[2] = 0x0A;
     if let Ok(dev) = output.lock() {
         let _ = dev.write(&cmd);
     }
@@ -655,34 +690,37 @@ fn debug_keys() -> Result<()> {
 
         let n = gamepad_device.read_timeout(&mut buf, 5).unwrap_or(0);
         if n >= 16 && buf[0] == REPORT_ID_GAMEPAD {
-            let dpad_raw = buf[1];
-            let dpad = match dpad_raw {
+            let buttons = u16::from_le_bytes([buf[1], buf[2]]);
+            let hat = buf[3] & 0x0F;
+            let dpad_str = match hat {
                 0 => "UP", 1 => "UP+RIGHT", 2 => "RIGHT", 3 => "RIGHT+DOWN",
                 4 => "DOWN", 5 => "DOWN+LEFT", 6 => "LEFT", 7 => "LEFT+UP",
                 _ => "?",
             };
 
             let mut btns: u16 = 0;
-            if (buf[2] & 0x01) != 0 { btns |= XBUTTON_A; }
-            if (buf[2] & 0x02) != 0 { btns |= XBUTTON_B; }
-            if (buf[2] & 0x04) != 0 { btns |= XBUTTON_X; }
-            if (buf[2] & 0x08) != 0 { btns |= XBUTTON_Y; }
-            if (buf[2] & 0x10) != 0 { btns |= XBUTTON_LB; }
-            if (buf[2] & 0x20) != 0 { btns |= XBUTTON_RB; }
+            if (buttons & (1 << 0)) != 0 { btns |= XBUTTON_A; }
+            if (buttons & (1 << 1)) != 0 { btns |= XBUTTON_B; }
+            if (buttons & (1 << 3)) != 0 { btns |= XBUTTON_X; }
+            if (buttons & (1 << 4)) != 0 { btns |= XBUTTON_Y; }
+            if (buttons & (1 << 6)) != 0 { btns |= XBUTTON_LB; }
+            if (buttons & (1 << 7)) != 0 { btns |= XBUTTON_RB; }
+            if (buttons & (1 << 13)) != 0 { btns |= XBUTTON_L3; }
+            if (buttons & (1 << 14)) != 0 { btns |= XBUTTON_R3; }
 
-            let lx = i32::from_le_bytes([buf[3], buf[4], 0, 0]);
-            let ly = i32::from_le_bytes([buf[5], buf[6], 0, 0]);
-            let rx = i32::from_le_bytes([buf[7], buf[8], 0, 0]);
-            let ry = i32::from_le_bytes([buf[9], buf[10], 0, 0]);
-            let lt = u16::from_le_bytes([buf[11], buf[12]]);
-            let rt = u16::from_le_bytes([buf[13], buf[14]]);
+            let lx = i32::from_le_bytes([buf[4], buf[5], 0, 0]);
+            let ly = i32::from_le_bytes([buf[6], buf[7], 0, 0]);
+            let rx = i32::from_le_bytes([buf[8], buf[9], 0, 0]);
+            let ry = i32::from_le_bytes([buf[10], buf[11], 0, 0]);
+            let lt = u16::from_le_bytes([buf[12], buf[13]]);
+            let rt = u16::from_le_bytes([buf[14], buf[15]]);
 
-            if btns != prev_gamepad_btns || dpad_raw != 8 {
+            if btns != prev_gamepad_btns || hat != 8 {
                 prev_gamepad_btns = btns;
 
                 let btn_names: Vec<&str> = vec![
                     ("A", XBUTTON_A), ("B", XBUTTON_B), ("X", XBUTTON_X), ("Y", XBUTTON_Y),
-                    ("LB", XBUTTON_LB), ("RB", XBUTTON_RB),
+                    ("LB", XBUTTON_LB), ("RB", XBUTTON_RB), ("L3", XBUTTON_L3), ("R3", XBUTTON_R3),
                 ]
                 .into_iter()
                 .filter(|(_, bit)| (btns & bit) != 0)
@@ -693,7 +731,7 @@ fn debug_keys() -> Result<()> {
 
                 println!(
                     "[Col01] btns=0x{:04X} ({}), hat={} ({}), LX={} LY={} RX={} RY={} LT={} RT={}",
-                    btns, btn_str, dpad_raw, dpad, lx, ly, rx, ry, lt, rt
+                    btns, btn_str, hat, dpad_str, lx, ly, rx, ry, lt, rt
                 );
             }
         }

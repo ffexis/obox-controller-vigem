@@ -1,6 +1,6 @@
 [package]
 name = "obox-controller-driver"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 description = "OBOX Bluetooth controller -> ViGEmBus Xbox360 middleware"
 
