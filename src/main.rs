@@ -11,7 +11,10 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::ffi::CString;
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 use vigem_client::{Client, TargetId, XButtons, XGamepad, Xbox360Wired, XNotification};
 
 mod hidhide;
@@ -95,61 +98,98 @@ fn main() -> Result<()> {
     }
     println!();
 
-    // 2. ViGEmBus 连接
+    // 2. ViGEmBus 连接（只连一次，session 反复 reuse）
     let client = Client::connect().context("Failed to connect to ViGEmBus driver")?;
-    let target_id = TargetId::XBOX360_WIRED;
-    let mut gamepad = Xbox360Wired::new(client, target_id);
-    gamepad
-        .plugin()
-        .context("Failed to plug in virtual Xbox360 controller")?;
-    gamepad
-        .wait_ready()
-        .context("Virtual controller not ready")?;
-    println!("[ViGEm] Virtual Xbox360 controller plugged in");
+    println!("[ViGEm] Connected to ViGEmBus driver");
+    println!();
 
-    // 2. HID 初始化 + 路径查找
+    // 3. 重连循环：每次 run_session 完成一次"连接-运行-断开"周期
+    //    首次启动若设备未连接，也会进入此循环等待
+    let mut first_attempt = true;
+    loop {
+        match run_session(&client) {
+            Ok(()) => {
+                // 正常退出（不应发生，run_session 总是返回 Err）
+                println!("[Main] Session ended normally, exiting.");
+                return Ok(());
+            }
+            Err(e) => {
+                // 区分"设备未连接"与其他错误，提示更友好
+                let msg = e.to_string();
+                if msg.contains("not connected") {
+                    if first_attempt {
+                        println!("[Main] Controller not connected. Waiting for pairing...");
+                    } else {
+                        // 重连等待中保持低调，避免刷屏
+                        eprint!("\r[Main] Waiting for controller... (retry in 3s)   ");
+                        let _ = io::stdout().flush();
+                    }
+                } else {
+                    eprintln!();
+                    eprintln!("[Main] Session ended: {}", msg);
+                    print!("[Main] Waiting 3s before reconnect...");
+                    let _ = io::stdout().flush();
+                }
+                first_attempt = false;
+                thread::sleep(Duration::from_secs(3));
+                if !msg.contains("not connected") {
+                    eprintln!();
+                    println!("[Main] Attempting reconnect...");
+                }
+            }
+        }
+    }
+}
+
+/// 一次完整的"连接-运行-断开"周期。
+///
+/// 返回 `Err` 表示蓝牙断开、HID 读取错误、或设备未连接，调用方应等待后重连。
+/// 返回 `Ok(())` 表示正常退出（目前不会发生，除非加 signal handler）。
+fn run_session(client: &Client) -> Result<()> {
+    println!("[Session] Connecting to controller...");
+
+    // HID 初始化 + 路径查找
+    // 设备未连接时 find_path 返回 None，转成 Err 让主循环等待重连
     let hid = hidapi::HidApi::new().context("Failed to initialize hidapi")?;
+    let gamepad_path = find_path(&hid, 0x0001, 0x0005).ok_or_else(|| {
+        anyhow::anyhow!("Controller not connected (Col01 gamepad interface not found)")
+    })?;
+    let consumer_path = find_path(&hid, 0x000C, 0x0001).ok_or_else(|| {
+        anyhow::anyhow!("Controller not connected (Col03 consumer interface not found)")
+    })?;
+    println!("[Session] HID interfaces found (Col01 + Col03)");
 
-    let gamepad_path = find_path(&hid, 0x0001, 0x0005)
-        .context("Gamepad interface (Col01) not found. Is the controller connected?")?;
-    let consumer_path = find_path(&hid, 0x000C, 0x0001)
-        .context("Consumer interface (Col03) not found")?;
-    println!("[HID] Col01 Gamepad + Col03 Consumer interfaces found");
+    let gp_cstr = CString::new(gamepad_path.as_bytes()).context("Invalid gamepad path")?;
+    let cs_cstr = CString::new(consumer_path.as_bytes()).context("Invalid consumer path")?;
 
-    let gamepad_path_cstr = CString::new(gamepad_path.as_bytes())
-        .context("Invalid gamepad device path")?;
-    let consumer_path_cstr = CString::new(consumer_path.as_bytes())
-        .context("Invalid consumer device path")?;
-
-    // 3. 打开 3 个独立的 device handle（避免读/写锁竞争）
-    // Col01 读 handle
+    // 打开 3 个独立的 device handle（避免读/写锁竞争）
     let gamepad_device = hid
-        .open_path(&gamepad_path_cstr)
+        .open_path(&gp_cstr)
         .context("Failed to open Col01 gamepad device")?;
     gamepad_device.set_blocking_mode(false).ok();
 
-    // Output 写 handle（振动），同一 path 再次 open
-    let output_device = hid
-        .open_path(&gamepad_path_cstr)
-        .context("Failed to open output device handle")?;
+    let output_device = hid.open_path(&gp_cstr).context("Failed to open output handle")?;
     let output_device = Arc::new(Mutex::new(output_device));
 
-    // Col03 读 handle
-    let consumer_device = hid
-        .open_path(&consumer_path_cstr)
-        .context("Failed to open Col03 consumer device")?;
+    let consumer_device = hid.open_path(&cs_cstr).context("Failed to open Col03 consumer")?;
     consumer_device.set_blocking_mode(false).ok();
-    println!("[HID] All device handles opened (Col01 read, Col03 read, output write)");
+    println!("[Session] HID device handles opened");
 
-    // 4. 共享状态
+    // ViGEmBus target：每次 session 重新创建 + plugin
+    let mut gamepad = Xbox360Wired::new(client, TargetId::XBOX360_WIRED);
+    gamepad.plugin().context("Failed to plug in virtual Xbox360")?;
+    gamepad.wait_ready().context("Virtual controller not ready")?;
+    println!("[Session] Virtual Xbox360 controller plugged in");
+
+    // 共享状态 + running flag
     let state = Arc::new(Mutex::new(ControllerState::default()));
+    let running = Arc::new(AtomicBool::new(true));
 
-    // 5. 振动回调（ViGEmBus notification → HID Output Report）
-    // XNotification.large_motor = 左马达（大），small_motor = 右马达（小）
-    let rumble_last = Arc::new(Mutex::new((0u8, 0u8))); // 上次发送的 (large, small)
+    // 振动回调（ViGEmBus notification → HID Output Report 0xB3）
+    let rumble_last = Arc::new(Mutex::new((0u8, 0u8)));
     let output_for_rumble = output_device.clone();
     let rumble_last_cb = rumble_last.clone();
-    let _rumble_thread = gamepad
+    let rumble_thread = gamepad
         .request_notification()
         .context("Failed to request ViGEmBus notification")?
         .spawn_thread(move |_, notif: XNotification| {
@@ -160,26 +200,44 @@ fn main() -> Result<()> {
                 notif.small_motor,
             );
         });
-    println!("[ViGEm] Rumble callback registered (large=left motor, small=right motor)");
+    println!("[Session] Rumble callback registered");
 
-    // 6. Col03 Consumer 线程
+    // Col03 Consumer 线程
     let state_for_consumer = state.clone();
-    std::thread::Builder::new()
+    let running_for_consumer = running.clone();
+    let consumer_handle = thread::Builder::new()
         .name("col03-consumer".into())
         .spawn(move || {
-            consumer_thread(consumer_device, state_for_consumer);
+            consumer_thread(consumer_device, state_for_consumer, running_for_consumer);
         })
         .context("Failed to spawn Col03 consumer thread")?;
-    println!("[HID] Col03 Consumer thread started");
 
-    println!("\nReady. Press Ctrl+C to exit.\n");
+    println!();
+    println!("Ready. Press Ctrl+C to exit.");
+    println!();
 
-    // 7. 主线程：Col01 读循环 + dirty 驱动输出
+    // 主循环：Col01 读 + dirty 驱动输出 + 断开检测
     let mut buf = [0u8; 64];
+    let disconnect_reason: String;
     loop {
-        let n = gamepad_device.read_timeout(&mut buf, 5).unwrap_or(0);
-        if n >= 16 && buf[0] == REPORT_ID_GAMEPAD {
-            update_gamepad_state(&state, &buf);
+        // Col03 线程检测到断开会 set running=false
+        if !running.load(Ordering::SeqCst) {
+            disconnect_reason = "Col03 (consumer) read error".into();
+            break;
+        }
+
+        // Col01 读取：timeout=5ms，错误视为断开
+        match gamepad_device.read_timeout(&mut buf, 5) {
+            Ok(n) if n >= 16 && buf[0] == REPORT_ID_GAMEPAD => {
+                update_gamepad_state(&state, &buf);
+            }
+            Ok(_) => {
+                // n=0 (timeout) 或数据不完整：正常，继续
+            }
+            Err(e) => {
+                disconnect_reason = format!("Col01 read error: {}", e);
+                break;
+            }
         }
 
         // dirty 驱动输出：仅当状态变化时调用 gamepad.update()
@@ -208,49 +266,99 @@ fn main() -> Result<()> {
             }
         }
     }
+
+    // ============================================================
+    // Cleanup：断开时同步断掉虚拟手柄
+    // ============================================================
+    println!("[Session] Disconnecting: {}", disconnect_reason);
+
+    // 1. 通知 Col03 线程退出
+    running.store(false, Ordering::SeqCst);
+
+    // 2. 发送零状态到虚拟手柄（清空按键）
+    let _ = gamepad.update(&XGamepad::default());
+
+    // 3. 停止物理手柄振动
+    {
+        let mut cmd = [0u8; 13];
+        cmd[0] = REPORT_ID_OUTPUT; // 0xB3
+        cmd[1] = 0x02; // Rumble
+        cmd[2] = 0x0A; // 双马达停止
+        if let Ok(dev) = output_device.lock() {
+            let _ = dev.write(&cmd);
+        }
+    }
+
+    // 4. Unplug 虚拟 Xbox360（这会让 ViGEmBus 通知停止，rumble_thread 退出）
+    let _ = gamepad.unplug();
+    println!("[Session] Virtual Xbox360 unplugged");
+
+    // 5. Join 子线程（rumble_thread 在 target drop/unplug 后终止）
+    //    gamepad 在函数末尾 drop，触发 notification abort
+    drop(rumble_thread);
+    let _ = consumer_handle.join();
+    println!("[Session] Threads joined, cleanup complete");
+
+    Err(anyhow::anyhow!("Controller disconnected: {}", disconnect_reason))
 }
 
 /// Col03 Consumer 线程主循环：读取 Consumer 接口，用集合差集检测按下/释放。
 ///
 /// 协议见 HID_PROTOCOL.md §3：3 个 usage slot，每次上报当前按下的 Usage 集合。
 /// 用集合差集避免槽位顺序变化导致的误触发。
-fn consumer_thread(device: hidapi::HidDevice, state: Arc<Mutex<ControllerState>>) {
+///
+/// 当 `running` 被外部 set 为 false，或 read 出错（蓝牙断开）时退出循环。
+fn consumer_thread(
+    device: hidapi::HidDevice,
+    state: Arc<Mutex<ControllerState>>,
+    running: Arc<AtomicBool>,
+) {
     let mut prev_usages: HashSet<u16> = HashSet::new();
     let mut buf = [0u8; 64];
-    loop {
-        let n = device.read_timeout(&mut buf, 100).unwrap_or(0);
-        if n < 7 || buf[0] != REPORT_ID_CONSUMER {
-            continue;
-        }
-        let curr_usages: HashSet<u16> = [
-            u16::from_le_bytes([buf[1], buf[2]]),
-            u16::from_le_bytes([buf[3], buf[4]]),
-            u16::from_le_bytes([buf[5], buf[6]]),
-        ]
-        .into_iter()
-        .filter(|&u| u != 0)
-        .collect();
+    while running.load(Ordering::SeqCst) {
+        let result = device.read_timeout(&mut buf, 100);
+        match result {
+            Ok(n) if n >= 7 && buf[0] == REPORT_ID_CONSUMER => {
+                let curr_usages: HashSet<u16> = [
+                    u16::from_le_bytes([buf[1], buf[2]]),
+                    u16::from_le_bytes([buf[3], buf[4]]),
+                    u16::from_le_bytes([buf[5], buf[6]]),
+                ]
+                .into_iter()
+                .filter(|&u| u != 0)
+                .collect();
 
-        let pressed = curr_usages.difference(&prev_usages);
-        let released = prev_usages.difference(&curr_usages);
+                let pressed = curr_usages.difference(&prev_usages);
+                let released = prev_usages.difference(&curr_usages);
 
-        {
-            let mut s = state.lock().unwrap();
-            for u in pressed {
-                if let Some(btn) = consumer_usage_to_xbox(*u) {
-                    s.consumer_buttons |= btn;
-                    s.dirty = true;
+                {
+                    let mut s = state.lock().unwrap();
+                    for u in pressed {
+                        if let Some(btn) = consumer_usage_to_xbox(*u) {
+                            s.consumer_buttons |= btn;
+                            s.dirty = true;
+                        }
+                    }
+                    for u in released {
+                        if let Some(btn) = consumer_usage_to_xbox(*u) {
+                            s.consumer_buttons &= !btn;
+                            s.dirty = true;
+                        }
+                    }
                 }
+
+                prev_usages = curr_usages;
             }
-            for u in released {
-                if let Some(btn) = consumer_usage_to_xbox(*u) {
-                    s.consumer_buttons &= !btn;
-                    s.dirty = true;
-                }
+            Ok(_) => {
+                // timeout 或数据不完整：正常，继续
+            }
+            Err(e) => {
+                // read 错误：蓝牙断开，通知主线程退出
+                eprintln!("[Col03] read error: {}, signaling disconnect", e);
+                running.store(false, Ordering::SeqCst);
+                break;
             }
         }
-
-        prev_usages = curr_usages;
     }
 }
 

@@ -16,17 +16,23 @@ This project is the **first and only complete reverse engineering** of the OBox 
 
 ## Features
 
-- **Col01 Gamepad interface** — buttons, analog sticks (Y-axis inverted), analog triggers (LT/RT), D-pad with diagonal support
-- **ViGEmBus Xbox 360 virtual gamepad forwarding** — presents a standard Xbox 360 controller to Windows
-- **LED control** — RGB LED, HOME button LED, and consumer area LED
-- **Rumble / Vibration** — dual motor (left/right), pulse mode and timed mode
+- **Col01 Gamepad interface** — buttons, analog sticks (Y-axis inverted to match XInput), analog triggers (LT/RT), D-pad with diagonal support
+- **Col03 Consumer interface** — Back / Start / Guide key mapping (0x224→BACK, 0x040→START, 0x0223→GUIDE) via set-difference to handle slot order variations
+- **[ViGEmBus](https://github.com/nefarius/ViGEmBus) Xbox 360 virtual gamepad forwarding** — presents a standard Xbox 360 controller to Windows
+- **Rumble callback** — ViGEmBus vibration notifications forwarded back to the physical gamepad via HID Output Report 0xB3 (dual-motor, pulse mode + timed mode)
+- **LED control** — RGB LED, HOME button LED, and consumer area LED (HID Output Report 0xB3)
+- **[HidHide](https://github.com/nefarius/HidHide) integration** — auto-registers the app and hides the physical gamepad so only the virtual Xbox 360 is visible to games; idempotent config, conservative cloak-state handling
+- **Bluetooth disconnect / auto-reconnect** — detects HID read errors, unplugs the virtual Xbox 360, waits, and reconnects when the controller reappears; also waits at startup if the controller isn't paired yet
+- **Debug modes** — `--debug-keys` (real-time Col01/Col03 input dump) and `--debug-output` (interactive vibration/LED test menu)
+- **CLI subcommands** — `--hidhide-status` / `--hidhide-disable` for inspecting and undoing HidHide configuration
 
 ## Project Structure
 
 ```
 .
 ├── src/                        # Rust implementation (main project)
-│   └── main.rs
+│   ├── main.rs                 # Entry point, session loop, debug modes
+│   └── hidhide.rs              # HidHide CLI integration
 ├── docs/                       # Protocol documentation
 │   ├── HID_PROTOCOL.md         # English
 │   └── HID_PROTOCOL_cn.md      # 中文
@@ -47,14 +53,22 @@ cargo run --release
 ```
 
 > **Prerequisite:** The [ViGEmBus](https://github.com/nefarius/ViGEmBus) driver must be installed.
+> [HidHide](https://github.com/nefarius/HidHide) is optional but recommended (auto-configured on startup if present).
+
+## CLI
+
+```
+obox-controller-driver                 Run driver (auto-enable HidHide, forward input to ViGEmBus)
+obox-controller-driver --hidhide-status   Show current HidHide configuration
+obox-controller-driver --hidhide-disable  Unhide OBOX from HidHide (keeps global cloak state)
+obox-controller-driver --debug-keys       Real-time Col01/Col03 input dump
+obox-controller-driver --debug-output     Interactive vibration/LED test menu
+obox-controller-driver -h, --help         Show help
+```
 
 ## TODO / Roadmap
 
-- [ ] Col03 Consumer interface (Back / Start / Guide)
-- [ ] Bluetooth auto-reconnect
-- [ ] Config file (deadzone, sensitivity, button mapping)
-- [ ] GUI / system tray
-- [ ] HidHide adaptation (hide physical gamepad from games, only expose virtual Xbox 360)
+- [ ] System tray GUI (background running, status indicator, quick settings)
 
 ## Protocol Documentation
 
@@ -88,17 +102,23 @@ The full HID protocol specification is available in [docs/HID_PROTOCOL.md](docs/
 
 ## 功能
 
-- **Col01 Gamepad 接口** — 按钮、模拟摇杆（Y 轴反转）、模拟扳机（LT/RT）、支持斜向的 D-pad
-- **ViGEmBus Xbox 360 虚拟手柄转发** — 向 Windows 呈现标准 Xbox 360 手柄
-- **LED 控制** — RGB LED、HOME 键指示灯、消费区 LED
-- **振动 (Rumble)** — 双马达（左/右），脉冲模式和定时模式
+- **Col01 Gamepad 接口** — 按钮、模拟摇杆（Y 轴反转以符合 XInput 规范）、模拟扳机（LT/RT）、支持斜向的 D-pad
+- **Col03 Consumer 接口** — Back / Start / Guide 按键映射（0x224→BACK, 0x040→START, 0x0223→GUIDE），使用集合差集检测以应对槽位顺序变化
+- **[ViGEmBus](https://github.com/nefarius/ViGEmBus) Xbox 360 虚拟手柄转发** — 向 Windows 呈现标准 Xbox 360 手柄
+- **振动回调** — ViGEmBus 振动通知回传至物理手柄（HID Output Report 0xB3，双马达，脉冲模式 + 定时模式）
+- **LED 控制** — RGB LED、HOME 键指示灯、消费区 LED（HID Output Report 0xB3）
+- **[HidHide](https://github.com/nefarius/HidHide) 集成** — 自动注册本应用并隐藏物理手柄，使游戏只能看到虚拟 Xbox 360；配置幂等，保守处理全局 cloak 状态
+- **蓝牙断开 / 自动重连** — 检测 HID 读取错误，断开虚拟 Xbox 360，等待手柄重新出现后自动重连；启动时若手柄未配对也会进入等待状态
+- **调试模式** — `--debug-keys`（实时打印 Col01/Col03 输入）和 `--debug-output`（交互式振动/LED 测试菜单）
+- **CLI 子命令** — `--hidhide-status` / `--hidhide-disable` 用于查看和撤销 HidHide 配置
 
 ## 项目结构
 
 ```
 .
 ├── src/                        # Rust 实现（主项目）
-│   └── main.rs
+│   ├── main.rs                 # 入口、session 循环、调试模式
+│   └── hidhide.rs              # HidHide CLI 集成
 ├── docs/                       # 协议文档
 │   ├── HID_PROTOCOL.md         # English
 │   └── HID_PROTOCOL_cn.md      # 中文
@@ -119,14 +139,22 @@ cargo run --release
 ```
 
 > **前提条件：** 需要已安装 [ViGEmBus](https://github.com/nefarius/ViGEmBus) 驱动。
+> [HidHide](https://github.com/nefarius/HidHide) 为可选但推荐（启动时如检测到会自动配置）。
+
+## CLI
+
+```
+obox-controller-driver                 运行驱动（自动配置 HidHide，转发输入到 ViGEmBus）
+obox-controller-driver --hidhide-status   查看 HidHide 当前配置
+obox-controller-driver --hidhide-disable  从 HidHide 中取消隐藏 OBOX（保留全局 cloak 状态）
+obox-controller-driver --debug-keys       实时打印 Col01/Col03 输入
+obox-controller-driver --debug-output     交互式振动/LED 测试菜单
+obox-controller-driver -h, --help         显示帮助
+```
 
 ## 待实现 / 路线图
 
-- [ ] Col03 Consumer 接口（Back / Start / Guide）
-- [ ] 蓝牙断线自动重连
-- [ ] 配置文件（死区、灵敏度、按键映射）
-- [ ] GUI / 系统托盘
-- [ ] HidHide 适配（对游戏隐藏物理手柄，仅暴露虚拟 Xbox 360）
+- [ ] 系统托盘 GUI（后台运行、状态指示、快捷设置）
 
 ## 协议文档
 
