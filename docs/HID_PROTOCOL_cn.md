@@ -139,7 +139,7 @@ else:
 |----------------|--------|--------------|------------------|
 | `0x224` | Back(Android 返回图标) | BACK | 无 |
 | `0x040` | Menu(Android 菜单图标) | START | 无 |
-| `0x223` | Home(中心键,西瓜键位置) | GUIDE | **打开浏览器**(需注册表禁用) |
+| `0x223` | Home(中心键,西瓜键位置) | GUIDE | **打开浏览器**(见 §3.4 屏蔽方法) |
 
 ### 3.3 状态变化检测(集合运算)
 
@@ -155,9 +155,13 @@ released = prev_usages - current_usages
 
 Home 键(Usage `0x223`)在 Windows 下默认映射为 `VK_BROWSER_HOME`,按下会打开浏览器。
 
-**禁用方法(注册表):** 删除 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\AppKey\7` 子键,重启 Explorer 生效。
+**屏蔽方法:**
 
-也可用项目内的 `disable_browser_home.reg` 一键导入。
+- **使用 HidHide 时** — 物理设备被隐藏,OS 不会处理此按键,无需额外操作。
+- **不使用 HidHide 时** — 使用 AutoHotKey,脚本只需一行:
+  ```ahk
+  Browser_Home::return
+  ```
 
 ---
 
@@ -441,7 +445,7 @@ LED 和振动共用 Report ID `0xB3`,通过 **byte[1]** 区分命令类型:
 
 ## 9. 已知问题与坑
 
-1. **Home 键弹浏览器** — 见 §3.4,注册表禁用
+1. **Home 键弹浏览器** — 见 §3.4,使用 HidHide 自动屏蔽,或用 AutoHotKey
 2. **Y 轴方向** — HID 与 XInput 相反,转发时必须取反,见 §2.4
 3. **D-pad 斜向** — Xbox360 支持同时按两个方向,见 §2.3
 4. **Keyboard 接口独占** — 见 §4.1,必须用全局钩子
@@ -464,6 +468,6 @@ LED 和振动共用 Report ID `0xB3`,通过 **byte[1]** 区分命令类型:
 - [ ] 推摇杆到四周极限,值接近 0 或 65535,Y 轴方向正确(向上 = 正)
 - [ ] 按 L2/R2 扳机,值 0 → 65535
 - [ ] 按 Back/Menu/Home,对应 Consumer Usage 0x224/0x040/0x223
-- [ ] Home 键不弹浏览器(注册表已禁用)
+- [ ] Home 键不弹浏览器(HidHide 或 AutoHotKey 已配置)
 - [ ] 拔掉手柄后重连,中间件 3 秒内自动恢复
 - [ ] 手柄静止时,CPU 占用接近 0(dirty 驱动生效)

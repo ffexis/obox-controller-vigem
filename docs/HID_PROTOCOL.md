@@ -133,18 +133,15 @@ def on_consumer_report(data):
 
 ### Windows Home Key Issue
 
-On Windows, `0x0223` (AC Home) triggers the default browser launch via the system's consumer control handler. To prevent this:
+On Windows, `0x0223` (AC Home) triggers the default browser launch via the system's consumer control handler.
 
-- Apply a registry fix to disable the AC Home hotkey, **or**
-- Intercept at the HID level before the OS consumer stack processes it.
+**How to suppress:**
 
-Registry path:
-
-```
-HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\PriorityControl
-```
-
-Set `Win32PrioritySeparation` or use a dedicated tool to suppress the Home consumer key.
+- **With HidHide** — the physical device is hidden from the OS, so the consumer key is never processed. No extra action needed.
+- **Without HidHide** — use AutoHotKey with a single-line script:
+  ```ahk
+  Browser_Home::return
+  ```
 
 ---
 
@@ -404,7 +401,7 @@ def process_stick(raw_x, raw_y):
 
 | # | Issue | Details / Workaround |
 |---|-------|---------------------|
-| 1 | **Home key opens browser** | Windows maps Consumer `0x0223` (AC Home) to launch the default browser. Requires registry fix or HID-level interception to suppress. |
+| 1 | **Home key opens browser** | Windows maps Consumer `0x0223` (AC Home) to launch the default browser. Suppressed automatically with HidHide; without HidHide, use AutoHotKey (`Browser_Home::return`). |
 | 2 | **Y-axis inversion** | Device reports Y-up as high value; XInput expects Y-up as low value. Must apply `y = 65535 - y` before forwarding. |
 | 3 | **D-Pad diagonal handling** | Hat switch reports diagonals as single values (1,3,5,7). Must decompose into two directional buttons for XInput (e.g., value 1 → UP + RIGHT). |
 | 4 | **Keyboard exclusive access** | Windows `kbdclass.sys` exclusively claims the keyboard collection. Cannot read via HIDAPI; must use `SetWindowsHookEx(WH_KEYBOARD_LL)`. |
@@ -427,7 +424,7 @@ def process_stick(raw_x, raw_y):
 - [ ] Hat switch values 0–8 map to correct D-Pad states
 - [ ] Consumer report (ID `0x0A`) is 7 bytes with 3 usage slots
 - [ ] Back (`0x0224`), Menu (`0x0040`), Home (`0x0223`) detected via set-diff
-- [ ] Home key does NOT open browser after registry fix
+- [ ] Home key does NOT open browser (HidHide or AutoHotKey)
 - [ ] PrintScreen captured via global keyboard hook
 - [ ] LED output report (ID `0xB3`, cmd `0x01`) changes LED colors
 - [ ] Rumble output report (ID `0xB3`, cmd `0x02`) activates motors
