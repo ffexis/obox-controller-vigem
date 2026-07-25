@@ -23,6 +23,7 @@ This project is the **first and only complete reverse engineering** of the OBox 
 - **LED control** — RGB LED, HOME button LED, and consumer area LED (HID Output Report 0xB3)
 - **[HidHide](https://github.com/nefarius/HidHide) integration** — auto-registers the app and hides the physical gamepad so only the virtual Xbox 360 is visible to games; idempotent config, conservative cloak-state handling
 - **Bluetooth disconnect / auto-reconnect** — detects HID read errors, unplugs the virtual Xbox 360, waits, and reconnects when the controller reappears; also waits at startup if the controller isn't paired yet
+- **System tray mode** — runs in background with tray icon, shows connection status/MAC address, LED control menu, and Windows notifications for connection events
 - **Debug modes** — `--debug-keys` (real-time Col01/Col03 input dump) and `--debug-output` (interactive vibration/LED test menu)
 - **CLI subcommands** — `--hidhide-status` / `--hidhide-disable` for inspecting and undoing HidHide configuration
 
@@ -32,11 +33,14 @@ This project is the **first and only complete reverse engineering** of the OBox 
 .
 ├── src/                        # Rust implementation (main project)
 │   ├── main.rs                 # Entry point, session loop, debug modes
-│   └── hidhide.rs              # HidHide CLI integration
+│   ├── hidhide.rs              # HidHide CLI integration
+│   ├── tray.rs                 # System tray, LED control, notifications
+│   └── boxicons-joystick-filled.ico  # Tray icon
 ├── docs/                       # Protocol documentation
 │   ├── HID_PROTOCOL.md         # English
 │   └── HID_PROTOCOL_cn.md      # 中文
 ├── Cargo.toml
+├── build.rs                    # Windows icon embedding
 └── LICENSE
 ```
 
@@ -58,7 +62,8 @@ cargo run --release
 ## CLI
 
 ```
-obox-controller-driver                 Run driver (auto-enable HidHide, forward input to ViGEmBus)
+obox-controller-driver                 Run in tray mode (auto when double-clicked)
+obox-controller-driver --cli           Run in CLI mode
 obox-controller-driver --hidhide-status   Show current HidHide configuration
 obox-controller-driver --hidhide-disable  Unhide OBOX from HidHide (keeps global cloak state)
 obox-controller-driver --debug-keys       Real-time Col01/Col03 input dump
@@ -66,13 +71,36 @@ obox-controller-driver --debug-output     Interactive vibration/LED test menu
 obox-controller-driver -h, --help         Show help
 ```
 
-## TODO / Roadmap
+### Tray Mode
 
-- [ ] System tray GUI (background running, status indicator, quick settings)
+When launched by double-clicking the executable (no console), the driver runs in tray mode:
+
+- **Windows notifications** — shows "Waiting for connection", "Connected successfully!", and "Disconnected"
+- **Tray menu** — displays connection status, controller MAC address, and LED control options
+- **LED control** — RGB status LED (Red/Green/Blue ON/OFF), Consumer area LED (ON/OFF), HOME button LED (ON/OFF)
+- **Single instance** — prevents multiple instances from running simultaneously
+
+### CLI Mode
+
+When launched from a terminal (with console), the driver runs in CLI mode with full output logging. Use `--cli` to force CLI mode.
 
 ## Protocol Documentation
 
 The full HID protocol specification is available in [docs/HID_PROTOCOL.md](docs/HID_PROTOCOL.md) (English) and [docs/HID_PROTOCOL_cn.md](docs/HID_PROTOCOL_cn.md) (中文).
+
+## Acknowledgments
+
+This project relies on the following excellent open-source components:
+
+- **[ViGEmBus](https://github.com/nefarius/ViGEmBus)** — Virtual Gamepad Emulation Bus driver by Nefarius Software Solutions e.U.
+- **[HidHide](https://github.com/nefarius/HidHide)** — Device hiding solution for gaming input devices by Nefarius Software Solutions e.U.
+- **[hidapi-rs](https://github.com/Osspial/hidapi-rs)** — Rust bindings for the hidapi library
+- **[vigem-client-rs](https://github.com/timniederhausen/vigem-client-rs)** — Rust bindings for the ViGEm client SDK
+- **[tray-icon](https://github.com/tauri-apps/tray-icon)** — Cross-platform system tray icon library
+- **[muda](https://github.com/tauri-apps/muda)** — Cross-platform menu library
+- **[winit](https://github.com/rust-windowing/winit)** — Cross-platform window creation and management library
+- **[windows-rs](https://github.com/microsoft/windows-rs)** — Rust bindings for the Windows API by Microsoft
+- **[Boxicons](https://boxicons.com/)** — Beautiful open-source icons (used for tray icon)
 
 ## Contributors
 
@@ -109,6 +137,7 @@ The full HID protocol specification is available in [docs/HID_PROTOCOL.md](docs/
 - **LED 控制** — RGB LED、HOME 键指示灯、消费区 LED（HID Output Report 0xB3）
 - **[HidHide](https://github.com/nefarius/HidHide) 集成** — 自动注册本应用并隐藏物理手柄，使游戏只能看到虚拟 Xbox 360；配置幂等，保守处理全局 cloak 状态
 - **蓝牙断开 / 自动重连** — 检测 HID 读取错误，断开虚拟 Xbox 360，等待手柄重新出现后自动重连；启动时若手柄未配对也会进入等待状态
+- **系统托盘模式** — 后台运行，托盘图标显示连接状态/MAC地址，LED控制菜单，Windows通知提示连接事件
 - **调试模式** — `--debug-keys`（实时打印 Col01/Col03 输入）和 `--debug-output`（交互式振动/LED 测试菜单）
 - **CLI 子命令** — `--hidhide-status` / `--hidhide-disable` 用于查看和撤销 HidHide 配置
 
@@ -118,11 +147,14 @@ The full HID protocol specification is available in [docs/HID_PROTOCOL.md](docs/
 .
 ├── src/                        # Rust 实现（主项目）
 │   ├── main.rs                 # 入口、session 循环、调试模式
-│   └── hidhide.rs              # HidHide CLI 集成
+│   ├── hidhide.rs              # HidHide CLI 集成
+│   ├── tray.rs                 # 系统托盘、LED控制、通知
+│   └── boxicons-joystick-filled.ico  # 托盘图标
 ├── docs/                       # 协议文档
 │   ├── HID_PROTOCOL.md         # English
 │   └── HID_PROTOCOL_cn.md      # 中文
 ├── Cargo.toml
+├── build.rs                    # Windows 图标嵌入
 └── LICENSE
 ```
 
@@ -144,7 +176,8 @@ cargo run --release
 ## CLI
 
 ```
-obox-controller-driver                 运行驱动（自动配置 HidHide，转发输入到 ViGEmBus）
+obox-controller-driver                 托盘模式运行（双击自动进入）
+obox-controller-driver --cli           CLI模式运行
 obox-controller-driver --hidhide-status   查看 HidHide 当前配置
 obox-controller-driver --hidhide-disable  从 HidHide 中取消隐藏 OBOX（保留全局 cloak 状态）
 obox-controller-driver --debug-keys       实时打印 Col01/Col03 输入
@@ -152,13 +185,36 @@ obox-controller-driver --debug-output     交互式振动/LED 测试菜单
 obox-controller-driver -h, --help         显示帮助
 ```
 
-## 待实现 / 路线图
+### 托盘模式
 
-- [ ] 系统托盘 GUI（后台运行、状态指示、快捷设置）
+双击可执行文件启动（无控制台）时，驱动以托盘模式运行：
+
+- **Windows 通知** — 显示"Waiting for connection"、"Connected successfully!"和"Disconnected"
+- **托盘菜单** — 显示连接状态、手柄MAC地址、LED控制选项
+- **LED 控制** — RGB状态灯（红/绿/蓝 ON/OFF）、消费区LED（ON/OFF）、HOME键LED（ON/OFF）
+- **单例运行** — 防止多个实例同时运行
+
+### CLI 模式
+
+从终端启动（有控制台）时，驱动以 CLI 模式运行，输出完整日志。使用 `--cli` 参数强制进入 CLI 模式。
 
 ## 协议文档
 
 完整的 HID 协议规范见 [docs/HID_PROTOCOL.md](docs/HID_PROTOCOL.md)（English）和 [docs/HID_PROTOCOL_cn.md](docs/HID_PROTOCOL_cn.md)（中文）。
+
+## 致谢
+
+本项目依赖以下优秀的开源组件：
+
+- **[ViGEmBus](https://github.com/nefarius/ViGEmBus)** — 虚拟手柄模拟总线驱动，由 Nefarius Software Solutions e.U. 开发
+- **[HidHide](https://github.com/nefarius/HidHide)** — 游戏输入设备隐藏方案，由 Nefarius Software Solutions e.U. 开发
+- **[hidapi-rs](https://github.com/Osspial/hidapi-rs)** — hidapi 库的 Rust 绑定
+- **[vigem-client-rs](https://github.com/timniederhausen/vigem-client-rs)** — ViGEm 客户端 SDK 的 Rust 绑定
+- **[tray-icon](https://github.com/tauri-apps/tray-icon)** — 跨平台系统托盘图标库
+- **[muda](https://github.com/tauri-apps/muda)** — 跨平台菜单库
+- **[winit](https://github.com/rust-windowing/winit)** — 跨平台窗口创建和管理库
+- **[windows-rs](https://github.com/microsoft/windows-rs)** — Microsoft 官方的 Windows API Rust 绑定
+- **[Boxicons](https://boxicons.com/)** — 精美的开源图标库（用于托盘图标）
 
 ## 贡献者
 

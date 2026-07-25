@@ -1,10 +1,36 @@
 [package]
 name = "obox-controller-driver"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "OBOX Bluetooth controller -> ViGEmBus Xbox360 middleware"
+
+[profile.release]
+strip = true
+opt-level = 3
+lto = "thin"
+
+[[bin]]
+name = "obox-controller-driver"
+path = "src/main.rs"
 
 [dependencies]
 hidapi = "2.6"
 vigem-client = { version = "0.1.4", features = ["unstable_xtarget_notification"] }
 anyhow = "1"
+tray-icon = "0.14"
+winit = "0.29"
+muda = "0.13"
+winres = "0.1"
+ico = "0.2"
+windows = { version = "0.56", features = [
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_System_Console",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+    "Win32_Security",
+] }
+
+[build-dependencies]
+winres = "0.1"
