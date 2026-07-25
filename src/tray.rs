@@ -119,8 +119,8 @@ fn send_led_command(output: &Arc<Mutex<hidapi::HidDevice>>, led_type: LedType, o
         LedType::Red => (2, if on { 0xFF } else { 0x00 }),
         LedType::Green => (4, if on { 0xFF } else { 0x00 }),
         LedType::Blue => (6, if on { 0xFF } else { 0x00 }),
-        LedType::Consumer => (8, if on { 0xFF } else { 0x00 }),
-        LedType::Home => (10, if on { 0xFF } else { 0x00 }),
+        LedType::Consumer => (10, if on { 0xFF } else { 0x00 }),
+        LedType::Home => (8, if on { 0xFF } else { 0x00 }),
     };
 
     cmd[offset] = if on { 0x01 } else { 0x02 };

@@ -824,12 +824,12 @@ fn debug_output() -> Result<()> {
             }
             'h' => {
                 let mut c = [0u8; 13];
-                c[0] = REPORT_ID_OUTPUT; c[1] = 0x01; c[10] = 0x01; c[11] = 0xFF;
+                c[0] = REPORT_ID_OUTPUT; c[1] = 0x01; c[8] = 0x01; c[9] = 0xFF;
                 Some(c)
             }
             'c' => {
                 let mut c = [0u8; 13];
-                c[0] = REPORT_ID_OUTPUT; c[1] = 0x01; c[8] = 0x01; c[9] = 0xFF;
+                c[0] = REPORT_ID_OUTPUT; c[1] = 0x01; c[10] = 0x01; c[11] = 0xFF;
                 Some(c)
             }
             'o' => {
