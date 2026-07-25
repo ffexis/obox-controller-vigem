@@ -255,7 +255,7 @@ gamepad.update()
 
 ## 6. Col01 Output Report (Report ID `0xB3`) — LED Control
 
-### Output Report — 12 bytes
+### Output Report — 13 bytes (including Report ID)
 
 ```
 Byte Offset  Size    Field
@@ -272,6 +272,7 @@ Byte Offset  Size    Field
 9            1       HOME LED — Brightness (0x00–0xFF)
 10           1       Consumer Area LED — Opcode
 11           1       Consumer Area LED — Brightness (0x00–0xFF)
+12           1       Reserved (0x00)
 ```
 
 ### LED Opcodes
@@ -285,7 +286,7 @@ Byte Offset  Size    Field
 ### Example: Set Red to 50%, Green off, Blue to 100%
 
 ```
-B3 01 01 80 02 00 01 FF 00 00 00 00
+B3 01 01 80 02 00 01 FF 00 00 00 00 00
 ```
 
 Breakdown:
@@ -296,6 +297,7 @@ Breakdown:
 - `01 FF` — Blue: set brightness to 0xFF (100%)
 - `00 00` — HOME LED: no-op
 - `00 00` — Consumer LED: no-op
+- `00` — Reserved
 
 ### RGB Behavior
 
@@ -307,7 +309,7 @@ Breakdown:
 
 ## 7. Col01 Output Report (Report ID `0xB3`) — Rumble Control
 
-### Output Report — 12 bytes
+### Output Report — 13 bytes (including Report ID)
 
 ```
 Byte Offset  Size    Field
@@ -319,7 +321,7 @@ Byte Offset  Size    Field
 4            1       Left Motor Duration (× 0.25s; 0 = pulse mode)
 5            1       Right Motor Intensity (0x00–0xFF)
 6            1       Right Motor Duration (× 0.25s; 0 = pulse mode)
-7-11         5       Reserved (0x00)
+7-12         6       Reserved (0x00)
 ```
 
 ### Motor Enable Byte (byte[2])
@@ -339,7 +341,7 @@ Bits [3:2] = Right Motor Opcode
 ### Example: Start both motors at full intensity for 2 seconds
 
 ```
-B3 02 05 FF 08 FF 08 00 00 00 00 00
+B3 02 05 FF 08 FF 08 00 00 00 00 00 00
 ```
 
 Breakdown:
@@ -350,7 +352,7 @@ Breakdown:
 - `08` — Left duration: 8 × 0.25s = 2.0s
 - `FF` — Right intensity: 255 (max)
 - `08` — Right duration: 8 × 0.25s = 2.0s
-- `00 00 00 00 00` — Reserved
+- `00 00 00 00 00 00` — Reserved
 
 ### Vibration Modes
 
@@ -362,7 +364,7 @@ Breakdown:
 ### Example: Stop left motor only
 
 ```
-B3 02 02 00 00 00 00 00 00 00 00 00
+B3 02 02 00 00 00 00 00 00 00 00 00 00
 ```
 
 - `02` — Motor enable: `0b00000010` → left=`10` (stop), right=`00` (no-op)
