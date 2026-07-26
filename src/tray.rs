@@ -15,7 +15,7 @@ use crate::REPORT_ID_OUTPUT;
 pub enum ConnectionStatus {
     Disconnected,
     Connected,
-    Reconnecting,
+    Connecting,
 }
 
 pub type OutputDevice = Arc<Mutex<hidapi::HidDevice>>;
@@ -194,7 +194,7 @@ pub fn run_tray(state: TrayState) -> Result<(), ()> {
     let home_on = MenuItem::with_id(MenuId::new("home_on"), "HOME Button ON", true, None);
     let home_off = MenuItem::with_id(MenuId::new("home_off"), "HOME Button OFF", true, None);
     
-    let led_submenu = Submenu::new("LED Control", true);
+    let led_submenu = Submenu::new("LED Control", false);
     led_submenu.append(&rgb_submenu).ok();
     led_submenu.append(&consumer_on).ok();
     led_submenu.append(&consumer_off).ok();
@@ -254,17 +254,20 @@ pub fn run_tray(state: TrayState) -> Result<(), ()> {
             Event::AboutToWait => {
                 let status = status_clone.lock().unwrap().clone();
                 let mac = mac_clone.lock().unwrap().clone();
-                
+
                 let status_text = match status {
                     ConnectionStatus::Disconnected => "Status: Disconnected",
                     ConnectionStatus::Connected => "Status: Connected",
-                    ConnectionStatus::Reconnecting => "Status: Reconnecting...",
+                    ConnectionStatus::Connecting => "Status: Connecting...",
                 };
-                
+
                 let mac_text = format!("MAC: {}", if mac.is_empty() { "N/A" } else { &mac });
-                
+
                 status_item.set_text(status_text);
-                mac_item.set_text(mac_text);
+                mac_item.set_text(&mac_text);
+
+                let connected = status == ConnectionStatus::Connected;
+                led_submenu.set_enabled(connected);
             }
             _ => {}
         }

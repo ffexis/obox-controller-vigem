@@ -163,7 +163,7 @@ fn main() -> Result<()> {
 }
 
 fn run_cli_mode() -> Result<()> {
-    println!("OBOX Bluetooth Controller -> ViGEmBus Xbox360 (Rust v1.0)");
+    println!("OBOX Bluetooth Controller -> ViGEmBus Xbox360 (Rust v1.0.3)");
     println!("==========================================================");
 
     if let Err(e) = hidhide::ensure_enabled() {
@@ -233,12 +233,12 @@ fn run_tray_mode() -> Result<()> {
             match run_session(&client_clone, Some((output_clone.clone(), status_clone.clone(), mac_clone.clone()))) {
                 Ok(()) => break,
                 Err(_) => {
-                    let mut s = status_clone.lock().unwrap();
-                    *s = tray::ConnectionStatus::Reconnecting;
                     if first_attempt {
                         tray::send_toast("OBOX Controller", "Waiting for connection...");
                     }
                     first_attempt = false;
+                    let mut s = status_clone.lock().unwrap();
+                    *s = tray::ConnectionStatus::Connecting;
                     thread::sleep(Duration::from_secs(3));
                 }
             }
@@ -268,11 +268,6 @@ fn run_session(
         Arc<Mutex<String>>,
     )>,
 ) -> Result<()> {
-    if let Some((_, status, _)) = &tray_state {
-        let mut s = status.lock().unwrap();
-        *s = tray::ConnectionStatus::Connected;
-    }
-
     let hid = hidapi::HidApi::new().context("Failed to initialize hidapi")?;
     
     let mac = get_mac_address(&hid);
@@ -345,7 +340,11 @@ fn run_session(
         })
         .context("Failed to spawn Col03 consumer thread")?;
 
-    tray::send_toast("OBOX Controller", "Connected successfully!");
+    if let Some((_, status, _)) = &tray_state {
+        let mut s = status.lock().unwrap();
+        *s = tray::ConnectionStatus::Connected;
+    }
+    tray::send_toast("OBOX Controller", "Connected");
 
     let mut buf = [0u8; 64];
     let disconnect_reason: String;
@@ -642,7 +641,7 @@ fn get_mac_address(hid: &hidapi::HidApi) -> String {
 
 fn print_usage() {
     println!(
-        "OBOX Bluetooth Controller -> ViGEmBus Xbox360 (v1.0.0)
+        "OBOX Bluetooth Controller -> ViGEmBus Xbox360 (v1.0.3)
 
 Usage:
   obox-controller-driver                 Run in tray mode (auto when double-clicked)
