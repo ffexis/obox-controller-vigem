@@ -29,3 +29,6 @@ Thumbs.db
 # 环境变量
 .env
 .env.local
+
+# trae 相关
+.trae/
