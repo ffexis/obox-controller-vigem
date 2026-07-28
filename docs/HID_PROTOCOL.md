@@ -1,8 +1,17 @@
 # OBOX Bluetooth Gamepad HID Protocol Documentation
 
-> VID = `0x0A5C`  PID = `0x4502` (Broadcom BCM20702 Bluetooth module)
+> VID = `0x0A5C`  PID = `0x4502` (Broadcom default IDs — see Hardware note below)
 > Connection: Bluetooth HID over L2CAP
 > Purpose: Reference for implementing ViGEmBus middleware in any language
+>
+> **Hardware (confirmed by teardown):** The gamepad's main controller is the
+> **Broadcom BCM20733** Bluetooth SoC (die marking `BCM20733A3KFB2G`), a
+> single-chip solution that integrates the Bluetooth radio, baseband and MCU.
+> The only other notable IC on the board is a power-management chip on the
+> reverse side. The product is therefore a *single-SoC Bluetooth HID* design.
+> Note: VID `0x0A5C` / PID `0x4502` are Broadcom's **default** identifiers and
+> do **not** reveal the exact chip — the earlier "BCM20702" guess derived from
+> VID/PID alone was incorrect.
 
 ---
 

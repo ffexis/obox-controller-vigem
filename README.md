@@ -16,6 +16,12 @@ The gamepad can connect to Windows via Bluetooth (VID `0x0A5C`, PID `0x4502`), b
 
 This project is the **first and only complete reverse engineering** of the OBox gamepad's HID protocol, documenting every single feature — including LED control (RGB, HOME indicator, consumer area) and dual-motor rumble. Through this driver, you can unlock the gamepad's **full functionality** on Windows.
 
+## Hardware
+
+The gamepad is built around the **Broadcom BCM20733** Bluetooth SoC (die marking `BCM20733A3KFB2G`), confirmed by physical teardown — a single-chip design that integrates the Bluetooth radio, baseband and MCU, paired with a separate power-management IC on the board's reverse side.
+
+> **Note on VID/PID:** The Bluetooth identifiers `0x0A5C` / `0x4502` are Broadcom's *default* vendor/product IDs and do **not** identify the specific chip. An earlier assumption that the controller used a BCM20702 (based on VID/PID alone) was incorrect; the actual main controller is the BCM20733.
+
 ## Features
 
 - **Col01 Gamepad interface** — buttons, analog sticks (Y-axis inverted to match XInput), analog triggers (LT/RT), D-pad with diagonal support

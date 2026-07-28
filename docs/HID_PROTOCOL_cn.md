@@ -1,8 +1,15 @@
 # OBOX 蓝牙手柄 HID 协议文档
 
-> VID = `0x0A5C`  PID = `0x4502`(Broadcom BCM20702 蓝牙模组)
+> VID = `0x0A5C`  PID = `0x4502`(Broadcom 默认 ID,详见下方硬件说明)
 > 连接方式: 蓝牙 HID over L2CAP
 > 文档用途: 供任意语言接入 ViGEmBus 重写中间件时参考
+>
+> **硬件方案(拆机确认):** 手柄主控为 **Broadcom BCM20733** 蓝牙 SoC
+> (芯片丝印 `BCM20733A3KFB2G`),属单芯片方案,内部集成蓝牙射频、基带与 MCU;
+> 主板上另一颗较明显的 IC 为背面的电源管理芯片。因此本产品属于
+> *单 SoC 蓝牙 HID* 设计。
+> 注意: VID `0x0A5C` / PID `0x4502` 是 Broadcom 的**默认**标识,
+> **无法**据此确定具体芯片型号——此前仅凭 VID/PID 推测的 "BCM20702" 是错误的。
 
 ---
 
