@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-07-28
+
+### Added
+
+- **Radial 2D Deadzone** — replaced per-axis linear deadzone with vector-based radial deadzone algorithm, eliminating non-linear diagonal behavior
+- **ADC Jitter Filter** — new `JITTER_TOLERANCE` (64) suppresses sub-threshold stick noise, always active regardless of deadzone setting
+- **`--no-deadzone` CLI Flag** — disables deadzone filtering while keeping ADC jitter filter active
+- **Tray Menu Deadzone Toggle** — clickable "Deadzone: ON/OFF" item in tray menu for runtime switching (tray mode only)
+
+### Fixed
+
+- CLI mode now waits for physical controller to be confirmed connected before registering virtual Xbox360 gamepad with ViGEmBus (previously registered an idle virtual device when no OBOX was paired)
+
+### Changed
+
+- `ControllerState` now holds `Arc<AtomicBool>` for deadzone flag, enabling runtime toggle in tray mode
+- Updated CLI/tray version display to v1.0.4
+- Updated help text with new `--no-deadzone` option and deadzone/jitter filter features
+
 ## [1.0.3] - 2026-07-26
 
 ### Fixed

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu},
@@ -24,6 +25,7 @@ pub struct TrayState {
     pub output_device: Arc<Mutex<Option<OutputDevice>>>,
     pub connection_status: Arc<Mutex<ConnectionStatus>>,
     pub mac_address: Arc<Mutex<String>>,
+    pub deadzone_enabled: Arc<AtomicBool>,
 }
 
 #[cfg(windows)]
@@ -134,10 +136,17 @@ fn send_led_command(output: &Arc<Mutex<hidapi::HidDevice>>, led_type: LedType, o
 fn handle_menu_event(
     event: &MenuEvent,
     output: &Arc<Mutex<Option<OutputDevice>>>,
+    deadzone_enabled: &Arc<AtomicBool>,
     event_loop_proxy: &winit::event_loop::EventLoopProxy<()>,
 ) {
     if event.id == MenuId::new("exit") {
         let _ = event_loop_proxy.send_event(());
+        return;
+    }
+
+    if event.id == MenuId::new("toggle_deadzone") {
+        let prev = deadzone_enabled.load(Ordering::SeqCst);
+        deadzone_enabled.store(!prev, Ordering::SeqCst);
         return;
     }
 
@@ -170,17 +179,24 @@ pub fn run_tray(state: TrayState) -> Result<(), ()> {
     let icon = load_icon();
 
     let menu = Menu::new();
-    
+
     let status_item = MenuItem::new("Status: Disconnected", true, None);
     let mac_item = MenuItem::new("MAC: N/A", true, None);
-    
+
+    let deadzone_text = if state.deadzone_enabled.load(Ordering::SeqCst) {
+        "Deadzone: ON"
+    } else {
+        "Deadzone: OFF"
+    };
+    let deadzone_item = MenuItem::with_id(MenuId::new("toggle_deadzone"), deadzone_text, true, None);
+
     let red_on = MenuItem::with_id(MenuId::new("red_on"), "Red ON", true, None);
     let red_off = MenuItem::with_id(MenuId::new("red_off"), "Red OFF", true, None);
     let green_on = MenuItem::with_id(MenuId::new("green_on"), "Green ON", true, None);
     let green_off = MenuItem::with_id(MenuId::new("green_off"), "Green OFF", true, None);
     let blue_on = MenuItem::with_id(MenuId::new("blue_on"), "Blue ON", true, None);
     let blue_off = MenuItem::with_id(MenuId::new("blue_off"), "Blue OFF", true, None);
-    
+
     let rgb_submenu = Submenu::new("RGB Status LED", true);
     rgb_submenu.append(&red_on).ok();
     rgb_submenu.append(&red_off).ok();
@@ -188,28 +204,31 @@ pub fn run_tray(state: TrayState) -> Result<(), ()> {
     rgb_submenu.append(&green_off).ok();
     rgb_submenu.append(&blue_on).ok();
     rgb_submenu.append(&blue_off).ok();
-    
+
     let consumer_on = MenuItem::with_id(MenuId::new("consumer_on"), "Consumer Area ON", true, None);
     let consumer_off = MenuItem::with_id(MenuId::new("consumer_off"), "Consumer Area OFF", true, None);
     let home_on = MenuItem::with_id(MenuId::new("home_on"), "HOME Button ON", true, None);
     let home_off = MenuItem::with_id(MenuId::new("home_off"), "HOME Button OFF", true, None);
-    
+
     let led_submenu = Submenu::new("LED Control", false);
     led_submenu.append(&rgb_submenu).ok();
     led_submenu.append(&consumer_on).ok();
     led_submenu.append(&consumer_off).ok();
     led_submenu.append(&home_on).ok();
     led_submenu.append(&home_off).ok();
-    
+
     let separator1 = PredefinedMenuItem::separator();
     let separator2 = PredefinedMenuItem::separator();
+    let separator3 = PredefinedMenuItem::separator();
     let exit_item = MenuItem::with_id(MenuId::new("exit"), "Exit", true, None);
-    
+
     menu.append(&status_item).ok();
     menu.append(&mac_item).ok();
     menu.append(&separator1).ok();
-    menu.append(&led_submenu).ok();
+    menu.append(&deadzone_item).ok();
     menu.append(&separator2).ok();
+    menu.append(&led_submenu).ok();
+    menu.append(&separator3).ok();
     menu.append(&exit_item).ok();
 
     let _tray_icon = TrayIconBuilder::new()
@@ -227,18 +246,20 @@ pub fn run_tray(state: TrayState) -> Result<(), ()> {
 
     let event_loop_proxy = event_loop.create_proxy();
     let output_clone = state.output_device.clone();
-    
+    let deadzone_clone = state.deadzone_enabled.clone();
+
     std::thread::spawn(move || {
         let receiver = MenuEvent::receiver();
         loop {
             if let Ok(event) = receiver.recv() {
-                handle_menu_event(&event, &output_clone, &event_loop_proxy);
+                handle_menu_event(&event, &output_clone, &deadzone_clone, &event_loop_proxy);
             }
         }
     });
 
     let status_clone = state.connection_status.clone();
     let mac_clone = state.mac_address.clone();
+    let deadzone_for_ui = state.deadzone_enabled.clone();
 
     let _ = event_loop.run(move |event, _control_flow| {
         match event {
@@ -262,9 +283,15 @@ pub fn run_tray(state: TrayState) -> Result<(), ()> {
                 };
 
                 let mac_text = format!("MAC: {}", if mac.is_empty() { "N/A" } else { &mac });
+                let deadzone_text = if deadzone_for_ui.load(Ordering::SeqCst) {
+                    "Deadzone: ON"
+                } else {
+                    "Deadzone: OFF"
+                };
 
                 status_item.set_text(status_text);
                 mac_item.set_text(&mac_text);
+                deadzone_item.set_text(deadzone_text);
 
                 let connected = status == ConnectionStatus::Connected;
                 led_submenu.set_enabled(connected);

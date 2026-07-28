@@ -15,6 +15,7 @@ Dependencies:
 Usage:
   python obox_middleware.py                   Run in CLI mode (default)
   python obox_middleware.py --cli             Run in CLI mode (explicit)
+  python obox_middleware.py --no-deadzone     Disable joystick deadzone (ADC jitter filter active)
   python obox_middleware.py --debug-keys     Debug: real-time key input
   python obox_middleware.py --debug-output   Debug: vibration/LED test
   python obox_middleware.py --hidhide-status Show HidHide configuration
@@ -26,6 +27,7 @@ Usage:
 import sys
 import os
 import time
+import math
 import struct
 import ctypes
 import threading
@@ -63,9 +65,10 @@ except ImportError:
 VENDOR_ID  = 0x0A5C
 PRODUCT_ID = 0x4502
 
-STICK_CENTER    = 32768
-STICK_DEADZONE  = 2000
-TRIGGER_THRESHOLD = 100
+STICK_CENTER       = 32768
+STICK_DEADZONE     = 2000
+JITTER_TOLERANCE   = 64
+TRIGGER_THRESHOLD  = 100
 
 REPORT_ID_GAMEPAD  = 0x07
 REPORT_ID_CONSUMER = 0x0A
@@ -436,8 +439,11 @@ def hidhide_disable() -> None:
 class ControllerState:
     """Thread-shared controller state."""
 
-    def __init__(self):
+    def __init__(self, deadzone_enabled: bool = True,
+                 jitter_tolerance: int = JITTER_TOLERANCE):
         self._lock = threading.Lock()
+        self.deadzone_enabled = deadzone_enabled
+        self.jitter_tolerance = jitter_tolerance
         self.gamepad_buttons: int = 0
         self.consumer_buttons: int = 0
         self.lt: int = 0
@@ -446,12 +452,38 @@ class ControllerState:
         self.thumb_ly: int = 0
         self.thumb_rx: int = 0
         self.thumb_ry: int = 0
+        self._raw_lx: int = 0
+        self._raw_ly: int = 0
+        self._raw_rx: int = 0
+        self._raw_ry: int = 0
         self.dirty: bool = True
+
+    def _apply_stick_filter(self, raw_x: int, raw_y: int,
+                            prev_x: int, prev_y: int) -> Tuple[int, int, bool]:
+        """Run radial deadzone + jitter filter on a single stick.
+
+        Returns (filtered_x, filtered_y, changed_flag).
+        """
+        cx = raw_x - STICK_CENTER
+        cy = -(raw_y - STICK_CENTER)
+
+        deadzone = STICK_DEADZONE if self.deadzone_enabled else 0
+        out_x, out_y = _radial_deadzone(cx, cy, deadzone)
+
+        if self.jitter_tolerance > 0:
+            dx = out_x - prev_x
+            dy = out_y - prev_y
+            if abs(dx) <= self.jitter_tolerance and abs(dy) <= self.jitter_tolerance:
+                # Jitter: keep previous stable value
+                return prev_x, prev_y, False
+
+        changed = (out_x != prev_x) or (out_y != prev_y)
+        return out_x, out_y, changed
 
     def update(self, gamepad_buttons: int = None, consumer_buttons: int = None,
                lt: int = None, rt: int = None,
-               thumb_lx: int = None, thumb_ly: int = None,
-               thumb_rx: int = None, thumb_ry: int = None):
+               thumb_lx_raw: int = None, thumb_ly_raw: int = None,
+               thumb_rx_raw: int = None, thumb_ry_raw: int = None):
         with self._lock:
             changed = False
             if gamepad_buttons is not None and self.gamepad_buttons != gamepad_buttons:
@@ -466,18 +498,29 @@ class ControllerState:
             if rt is not None and self.rt != rt:
                 self.rt = rt
                 changed = True
-            if thumb_lx is not None and self.thumb_lx != thumb_lx:
-                self.thumb_lx = thumb_lx
-                changed = True
-            if thumb_ly is not None and self.thumb_ly != thumb_ly:
-                self.thumb_ly = thumb_ly
-                changed = True
-            if thumb_rx is not None and self.thumb_rx != thumb_rx:
-                self.thumb_rx = thumb_rx
-                changed = True
-            if thumb_ry is not None and self.thumb_ry != thumb_ry:
-                self.thumb_ry = thumb_ry
-                changed = True
+
+            if thumb_lx_raw is not None and thumb_ly_raw is not None:
+                fx, fy, c = self._apply_stick_filter(
+                    thumb_lx_raw, thumb_ly_raw, self.thumb_lx, self.thumb_ly
+                )
+                if c:
+                    self.thumb_lx = fx
+                    self.thumb_ly = fy
+                    changed = True
+                self._raw_lx = thumb_lx_raw
+                self._raw_ly = thumb_ly_raw
+
+            if thumb_rx_raw is not None and thumb_ry_raw is not None:
+                fx, fy, c = self._apply_stick_filter(
+                    thumb_rx_raw, thumb_ry_raw, self.thumb_rx, self.thumb_ry
+                )
+                if c:
+                    self.thumb_rx = fx
+                    self.thumb_ry = fy
+                    changed = True
+                self._raw_rx = thumb_rx_raw
+                self._raw_ry = thumb_ry_raw
+
             if changed:
                 self.dirty = True
 
@@ -521,31 +564,42 @@ def get_mac_address() -> str:
 
 
 # ============================================================
-# Deadzone Rescaling (matching Rust implementation)
+# Stick Processing: radial deadzone + ADC jitter filter
 # ============================================================
-def apply_deadzone(val: int) -> int:
-    """Apply deadzone with rescaling.
+def _radial_deadzone(x: int, y: int, deadzone: int) -> Tuple[int, int]:
+    """Apply 2D radial (vector) deadzone with rescaling.
 
-    Maps deadzone boundary to 0, full deflection to ±32767.
-    Output always fits in int16 range.
+    Args:
+        x, y: Centered stick values (relative to STICK_CENTER),
+              Y already inverted for XInput (up=positive).
+        deadzone: Radial deadzone radius (0 disables deadzone).
+
+    Returns:
+        (x_out, y_out): Rescaled int16-range values. When deadzone > 0,
+        vectors inside the deadzone are clamped to (0, 0); vectors outside
+        are rescaled onto the [-32768, 32767] disc so edge input maps to edge
+        output (no non-linear dead-band on diagonals).
     """
-    delta = val - STICK_CENTER
-    if abs(delta) < STICK_DEADZONE:
-        return 0
-    if delta > 0:
-        return int((delta - STICK_DEADZONE) * 32767 / (32767 - STICK_DEADZONE))
-    else:
-        return int((delta + STICK_DEADZONE) * 32767 / (32768 - STICK_DEADZONE))
+    if deadzone <= 0:
+        return (
+            max(-32768, min(32767, x)),
+            max(-32768, min(32767, y)),
+        )
 
+    magnitude = math.hypot(x, y)
+    if magnitude < deadzone:
+        return (0, 0)
 
-def apply_deadzone_y(val: int) -> int:
-    """Apply deadzone with rescaling + Y-axis inversion for XInput.
-
-    Device: UP=low(0), DOWN=high(65535).
-    XInput: UP=positive, DOWN=negative.
-    So we negate the Y axis.
-    """
-    return -apply_deadzone(val)
+    outer = STICK_CENTER - deadzone
+    scale = (magnitude - deadzone) / outer if outer > 0 else 0.0
+    if scale > 1.0:
+        scale = 1.0
+    nx = x / magnitude * scale * 32767.0
+    ny = y / magnitude * scale * 32767.0
+    return (
+        int(math.copysign(abs(nx) + 0.5, nx)),
+        int(math.copysign(abs(ny) + 0.5, ny)),
+    )
 
 
 def apply_trigger_deadzone(val: int) -> int:
@@ -607,16 +661,11 @@ class GamepadReader(threading.Thread):
 
         btns |= dpad
 
-        # Sticks with deadzone rescaling (bytes 4-11)
+        # Sticks with radial deadzone + jitter filter (bytes 4-11)
         lx_raw = struct.unpack_from("<H", buf, 4)[0]
         ly_raw = struct.unpack_from("<H", buf, 6)[0]
         rx_raw = struct.unpack_from("<H", buf, 8)[0]
         ry_raw = struct.unpack_from("<H", buf, 10)[0]
-
-        lx = apply_deadzone(lx_raw)
-        ly = apply_deadzone_y(ly_raw)
-        rx = apply_deadzone(rx_raw)
-        ry = apply_deadzone_y(ry_raw)
 
         # Triggers with deadzone (bytes 12-15)
         lt_raw = struct.unpack_from("<H", buf, 12)[0]
@@ -627,8 +676,8 @@ class GamepadReader(threading.Thread):
         self.state.update(
             gamepad_buttons=btns,
             lt=lt, rt=rt,
-            thumb_lx=lx, thumb_ly=ly,
-            thumb_rx=rx, thumb_ry=ry,
+            thumb_lx_raw=lx_raw, thumb_ly_raw=ly_raw,
+            thumb_rx_raw=rx_raw, thumb_ry_raw=ry_raw,
         )
 
         if self.debug:
@@ -1207,6 +1256,7 @@ def print_usage():
         "Usage:\n"
         "  obox_middleware.py                     Run in CLI mode (default)\n"
         "  obox_middleware.py --cli               Run in CLI mode (explicit)\n"
+        "  obox_middleware.py --no-deadzone       Disable joystick deadzone (ADC jitter filter active)\n"
         "  obox_middleware.py --hidhide-status    Show HidHide configuration\n"
         "  obox_middleware.py --hidhide-disable   Disable HidHide for OBOX\n"
         "  obox_middleware.py --debug-keys        Debug: real-time key input\n"
@@ -1216,6 +1266,8 @@ def print_usage():
         "Features:\n"
         "  - Col01 Gamepad + Col03 Consumer input forwarding\n"
         "  - ViGEmBus Xbox360 virtual controller\n"
+        "  - Radial 2D joystick deadzone with rescaling (default ON)\n"
+        "  - ADC jitter filter (always active)\n"
         "  - Rumble callback (ViGEmBus -> physical gamepad)\n"
         "  - LED control (RGB, HOME, Consumer area)\n"
         "  - HidHide integration (auto-config)\n"
@@ -1226,7 +1278,7 @@ def print_usage():
 # ============================================================
 # Main Session Loop (matching Rust's run_session)
 # ============================================================
-def run_session(gamepad) -> str:
+def run_session(gamepad, deadzone_enabled: bool = True) -> str:
     """
     Run one controller session. Returns disconnect reason string.
     This is called in a loop for auto-reconnect.
@@ -1243,7 +1295,9 @@ def run_session(gamepad) -> str:
     if not consumer_path:
         raise RuntimeError("Controller not connected (Col03 consumer interface not found)")
 
-    state = ControllerState()
+    state = ControllerState(deadzone_enabled=deadzone_enabled)
+    print(f"[Main] Stick deadzone: {'ON' if deadzone_enabled else 'OFF'} "
+          f"(jitter_tol={state.jitter_tolerance})")
     rumble = RumbleHandler()
 
     output_dev = hid.device()
@@ -1314,18 +1368,14 @@ def run_session(gamepad) -> str:
                         lt_raw = struct.unpack_from("<H", data, 12)[0]
                         rt_raw = struct.unpack_from("<H", data, 14)[0]
 
-                        lx = apply_deadzone(lx_raw)
-                        ly = apply_deadzone_y(ly_raw)
-                        rx = apply_deadzone(rx_raw)
-                        ry = apply_deadzone_y(ry_raw)
                         lt = apply_trigger_deadzone(lt_raw)
                         rt = apply_trigger_deadzone(rt_raw)
 
                         state.update(
                             gamepad_buttons=btns,
                             lt=lt, rt=rt,
-                            thumb_lx=lx, thumb_ly=ly,
-                            thumb_rx=rx, thumb_ry=ry,
+                            thumb_lx_raw=lx_raw, thumb_ly_raw=ly_raw,
+                            thumb_rx_raw=rx_raw, thumb_ry_raw=ry_raw,
                         )
             except Exception as e:
                 disconnect_reason = f"Col01 read error: {e}"
@@ -1389,6 +1439,8 @@ def main():
     )
     parser.add_argument("--cli", action="store_true",
                         help="Run in CLI mode (default)")
+    parser.add_argument("--no-deadzone", action="store_true",
+                        help="Disable joystick deadzone filter (ADC jitter filter still active)")
     parser.add_argument("-h", "--help", action="store_true",
                         help="Show help")
     parser.add_argument("--hidhide-status", action="store_true",
@@ -1437,11 +1489,27 @@ def main():
     print("OBOX Bluetooth Controller -> ViGEmBus Xbox360 (Python v1.0)")
     print("=" * 55)
 
+    deadzone_enabled = not args.no_deadzone
+    if deadzone_enabled:
+        print("[Config] Joystick deadzone: ON (radial 2D, rescaling)")
+    else:
+        print("[Config] Joystick deadzone: OFF (ADC jitter filter only)")
+
     # HidHide setup
     hidhide_ensure_enabled(app_path)
     print()
 
-    # Connect to ViGEmBus
+    # Wait for physical controller before registering virtual gamepad
+    # (avoids exposing an idle Xbox360 device when no OBOX is paired)
+    print("[Main] Waiting for OBOX controller to connect...")
+    while True:
+        if find_path(0x0001, 0x0005) and find_path(0x000C, 0x0001):
+            break
+        print("\r[Main] Waiting for controller... (retry in 3s)   ", end="", flush=True)
+        time.sleep(3)
+    print("\r[Main] Controller detected.                        ")
+
+    # Connect to ViGEmBus (only after physical controller confirmed)
     try:
         gamepad = vg.VX360Gamepad()
         print("[ViGEm] Connected to ViGEmBus driver")
@@ -1456,7 +1524,7 @@ def main():
     last_reason = ""
     while True:
         try:
-            last_reason = run_session(gamepad)
+            last_reason = run_session(gamepad, deadzone_enabled=deadzone_enabled)
             if last_reason == "User interrupt":
                 print("\n[Main] Session ended by user, exiting.")
                 break

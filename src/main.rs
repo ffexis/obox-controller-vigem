@@ -8,6 +8,8 @@ use std::thread;
 use std::time::Duration;
 use vigem_client::{Client, TargetId, XGamepad, Xbox360Wired, XNotification};
 
+const APP_VERSION: &str = "1.0.4";
+
 mod hidhide;
 mod tray;
 
@@ -16,6 +18,7 @@ const PRODUCT_ID: u16 = 0x4502;
 
 const STICK_CENTER: i32 = 32768;
 const STICK_DEADZONE: i32 = 2000;
+const JITTER_TOLERANCE: i32 = 64;
 const TRIGGER_THRESHOLD: u16 = 100;
 
 const REPORT_ID_GAMEPAD: u8 = 0x07;
@@ -52,10 +55,11 @@ struct ControllerState {
     thumb_rx: i16,
     thumb_ry: i16,
     dirty: bool,
+    deadzone_enabled: Arc<AtomicBool>,
 }
 
-impl Default for ControllerState {
-    fn default() -> Self {
+impl ControllerState {
+    fn new(deadzone_enabled: Arc<AtomicBool>) -> Self {
         Self {
             gamepad_buttons: 0,
             consumer_buttons: 0,
@@ -66,6 +70,7 @@ impl Default for ControllerState {
             thumb_rx: 0,
             thumb_ry: 0,
             dirty: true,
+            deadzone_enabled,
         }
     }
 }
@@ -113,7 +118,10 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("");
 
+    let no_deadzone = args.contains(&"--no-deadzone".to_string());
+
     let has_cli_arg = args.contains(&"--cli".to_string()) ||
+                      no_deadzone ||
                       cmd == "--help" || cmd == "-h" ||
                       cmd == "--hidhide-status" ||
                       cmd == "--hidhide-disable" ||
@@ -148,7 +156,7 @@ fn main() -> Result<()> {
     let is_cli_mode = has_cli_arg || !cfg!(windows) || !is_double_clicked();
 
     if is_cli_mode {
-        run_cli_mode()
+        run_cli_mode(no_deadzone)
     } else {
         let result = run_tray_mode();
         if let Err(e) = &result {
@@ -162,9 +170,17 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_cli_mode() -> Result<()> {
-    println!("OBOX Bluetooth Controller -> ViGEmBus Xbox360 (Rust v1.0.3)");
+fn run_cli_mode(no_deadzone: bool) -> Result<()> {
+    println!("OBOX Bluetooth Controller -> ViGEmBus Xbox360 (Rust v{})", APP_VERSION);
     println!("==========================================================");
+
+    let deadzone_enabled = Arc::new(AtomicBool::new(!no_deadzone));
+    if !no_deadzone {
+        println!("[Config] Joystick deadzone: ON (radial 2D, rescaling)");
+    } else {
+        println!("[Config] Joystick deadzone: OFF (ADC jitter filter only)");
+    }
+    println!();
 
     if let Err(e) = hidhide::ensure_enabled() {
         eprintln!("[HidHide] WARN: {}", e);
@@ -172,13 +188,28 @@ fn run_cli_mode() -> Result<()> {
     }
     println!();
 
+    // Wait for physical controller before registering virtual gamepad
+    println!("[Main] Waiting for OBOX controller to connect...");
+    loop {
+        let hid = hidapi::HidApi::new().context("Failed to initialize hidapi")?;
+        if find_path(&hid, 0x0001, 0x0005).is_some()
+            && find_path(&hid, 0x000C, 0x0001).is_some()
+        {
+            break;
+        }
+        eprint!("\r[Main] Waiting for controller... (retry in 3s)   ");
+        let _ = io::stdout().flush();
+        thread::sleep(Duration::from_secs(3));
+    }
+    println!("\r[Main] Controller detected.                        ");
+
     let client = Client::connect().context("Failed to connect to ViGEmBus driver")?;
     println!("[ViGEm] Connected to ViGEmBus driver");
     println!();
 
     let mut first_attempt = true;
     loop {
-        match run_session(&client, None) {
+        match run_session(&client, None, deadzone_enabled.clone()) {
             Ok(()) => {
                 println!("[Main] Session ended normally, exiting.");
                 return Ok(());
@@ -219,18 +250,20 @@ fn run_tray_mode() -> Result<()> {
     let output_device = Arc::new(Mutex::new(None));
     let connection_status = Arc::new(Mutex::new(tray::ConnectionStatus::Disconnected));
     let mac_address = Arc::new(Mutex::new(String::new()));
+    let deadzone_enabled = Arc::new(AtomicBool::new(true));
     let should_exit = Arc::new(AtomicBool::new(false));
 
     let output_clone = output_device.clone();
     let status_clone = connection_status.clone();
     let mac_clone = mac_address.clone();
+    let deadzone_clone = deadzone_enabled.clone();
     let should_exit_clone = should_exit.clone();
     let client_clone = client.try_clone().context("Failed to clone ViGEmBus client")?;
 
     let driver_thread = thread::spawn(move || {
         let mut first_attempt = true;
         while !should_exit_clone.load(Ordering::SeqCst) {
-            match run_session(&client_clone, Some((output_clone.clone(), status_clone.clone(), mac_clone.clone()))) {
+            match run_session(&client_clone, Some((output_clone.clone(), status_clone.clone(), mac_clone.clone())), deadzone_clone.clone()) {
                 Ok(()) => break,
                 Err(_) => {
                     if first_attempt {
@@ -250,6 +283,7 @@ fn run_tray_mode() -> Result<()> {
         output_device,
         connection_status,
         mac_address,
+        deadzone_enabled,
     }).map_err(|_| anyhow::anyhow!("Failed to run tray icon"))?;
 
     should_exit.store(true, Ordering::SeqCst);
@@ -267,6 +301,7 @@ fn run_session(
         Arc<Mutex<tray::ConnectionStatus>>,
         Arc<Mutex<String>>,
     )>,
+    deadzone_enabled: Arc<AtomicBool>,
 ) -> Result<()> {
     let hid = hidapi::HidApi::new().context("Failed to initialize hidapi")?;
     
@@ -304,7 +339,7 @@ fn run_session(
     gamepad.plugin().context("Failed to plug in virtual Xbox360")?;
     gamepad.wait_ready().context("Virtual controller not ready")?;
 
-    let state = Arc::new(Mutex::new(ControllerState::default()));
+    let state = Arc::new(Mutex::new(ControllerState::new(deadzone_enabled)));
     let running = Arc::new(AtomicBool::new(true));
 
     let rumble_state = Arc::new(Mutex::new(RumbleState::default()));
@@ -471,20 +506,38 @@ fn consumer_usage_to_xbox(usage: u16) -> Option<u16> {
     }
 }
 
-fn apply_deadzone(val: u16) -> i16 {
-    let delta = val as i32 - STICK_CENTER;
-    if delta.abs() < STICK_DEADZONE {
-        return 0;
+/// Apply 2D radial (vector) deadzone with rescaling.
+/// x, y are centered stick values (Y already inverted for XInput).
+/// deadzone=0 disables the deadzone (pass-through with clamping).
+fn radial_deadzone(x: i32, y: i32, deadzone: i32) -> (i16, i16) {
+    if deadzone <= 0 {
+        return (
+            x.clamp(-32768, 32767) as i16,
+            y.clamp(-32768, 32767) as i16,
+        );
     }
-    if delta > 0 {
-        ((delta - STICK_DEADZONE) * 32767 / (32767 - STICK_DEADZONE)) as i16
-    } else {
-        ((delta + STICK_DEADZONE) * 32767 / (32768 - STICK_DEADZONE)) as i16
-    }
-}
 
-fn apply_deadzone_y(val: u16) -> i16 {
-    -apply_deadzone(val)
+    let magnitude = ((x as f64).powi(2) + (y as f64).powi(2)).sqrt();
+    if magnitude < deadzone as f64 {
+        return (0, 0);
+    }
+
+    let outer = (STICK_CENTER - deadzone) as f64;
+    let scale = if outer > 0.0 {
+        ((magnitude - deadzone as f64) / outer).min(1.0)
+    } else {
+        0.0
+    };
+    let nx = x as f64 / magnitude * scale * 32767.0;
+    let ny = y as f64 / magnitude * scale * 32767.0;
+
+    // Round with sign preservation (matching Python's copysign approach)
+    let nx_i = (nx.abs() + 0.5) as i32;
+    let ny_i = (ny.abs() + 0.5) as i32;
+    (
+        (if nx >= 0.0 { nx_i } else { -nx_i }).clamp(-32768, 32767) as i16,
+        (if ny >= 0.0 { ny_i } else { -ny_i }).clamp(-32768, 32767) as i16,
+    )
 }
 
 fn apply_trigger(val: u16) -> u8 {
@@ -523,23 +576,51 @@ fn update_gamepad_state(state: &Arc<Mutex<ControllerState>>, buf: &[u8]) {
     if (buttons & (1 << 13)) != 0 { btns |= XBUTTON_L3; }
     if (buttons & (1 << 14)) != 0 { btns |= XBUTTON_R3; }
 
-    let lx = apply_deadzone(u16::from_le_bytes([buf[4], buf[5]]));
-    let ly = apply_deadzone_y(u16::from_le_bytes([buf[6], buf[7]]));
-    let rx = apply_deadzone(u16::from_le_bytes([buf[8], buf[9]]));
-    let ry = apply_deadzone_y(u16::from_le_bytes([buf[10], buf[11]]));
+    // Raw stick values → centered + Y-axis inversion (XInput: UP=positive)
+    let lx_raw = u16::from_le_bytes([buf[4], buf[5]]) as i32;
+    let ly_raw = u16::from_le_bytes([buf[6], buf[7]]) as i32;
+    let rx_raw = u16::from_le_bytes([buf[8], buf[9]]) as i32;
+    let ry_raw = u16::from_le_bytes([buf[10], buf[11]]) as i32;
+
+    let lx = lx_raw - STICK_CENTER;
+    let ly = -(ly_raw - STICK_CENTER);
+    let rx = rx_raw - STICK_CENTER;
+    let ry = -(ry_raw - STICK_CENTER);
+
+    let deadzone = if s.deadzone_enabled.load(Ordering::Relaxed) { STICK_DEADZONE } else { 0 };
+    let (new_lx, new_ly) = radial_deadzone(lx, ly, deadzone);
+    let (new_rx, new_ry) = radial_deadzone(rx, ry, deadzone);
+
+    // ADC jitter filter: suppress sub-threshold stick changes
+    let (final_lx, final_ly) = if ((new_lx as i32) - (s.thumb_lx as i32)).abs() <= JITTER_TOLERANCE
+        && ((new_ly as i32) - (s.thumb_ly as i32)).abs() <= JITTER_TOLERANCE
+    {
+        (s.thumb_lx, s.thumb_ly)
+    } else {
+        (new_lx, new_ly)
+    };
+    let (final_rx, final_ry) = if ((new_rx as i32) - (s.thumb_rx as i32)).abs() <= JITTER_TOLERANCE
+        && ((new_ry as i32) - (s.thumb_ry as i32)).abs() <= JITTER_TOLERANCE
+    {
+        (s.thumb_rx, s.thumb_ry)
+    } else {
+        (new_rx, new_ry)
+    };
 
     let lt = apply_trigger(u16::from_le_bytes([buf[12], buf[13]]));
     let rt = apply_trigger(u16::from_le_bytes([buf[14], buf[15]]));
 
-    if s.gamepad_buttons != btns || s.lt != lt || s.rt != rt ||
-       s.thumb_lx != lx || s.thumb_ly != ly || s.thumb_rx != rx || s.thumb_ry != ry {
+    if s.gamepad_buttons != btns || s.lt != lt || s.rt != rt
+        || s.thumb_lx != final_lx || s.thumb_ly != final_ly
+        || s.thumb_rx != final_rx || s.thumb_ry != final_ry
+    {
         s.gamepad_buttons = btns;
         s.lt = lt;
         s.rt = rt;
-        s.thumb_lx = lx;
-        s.thumb_ly = ly;
-        s.thumb_rx = rx;
-        s.thumb_ry = ry;
+        s.thumb_lx = final_lx;
+        s.thumb_ly = final_ly;
+        s.thumb_rx = final_rx;
+        s.thumb_ry = final_ry;
         s.dirty = true;
     }
 }
@@ -641,11 +722,12 @@ fn get_mac_address(hid: &hidapi::HidApi) -> String {
 
 fn print_usage() {
     println!(
-        "OBOX Bluetooth Controller -> ViGEmBus Xbox360 (v1.0.3)
+        "OBOX Bluetooth Controller -> ViGEmBus Xbox360 (v{})
 
 Usage:
   obox-controller-driver                 Run in tray mode (auto when double-clicked)
   obox-controller-driver --cli           Run in CLI mode
+  obox-controller-driver --no-deadzone   Disable joystick deadzone (ADC jitter filter active)
   obox-controller-driver --hidhide-status   Show HidHide configuration
   obox-controller-driver --hidhide-disable  Disable HidHide for OBOX
   obox-controller-driver --debug-keys       Debug: real-time key input
@@ -655,11 +737,14 @@ Usage:
 Features:
   - Col01 Gamepad + Col03 Consumer input forwarding
   - ViGEmBus Xbox360 virtual controller
+  - Radial 2D joystick deadzone with rescaling (default ON)
+  - ADC jitter filter (always active)
   - Rumble callback (ViGEmBus -> physical gamepad)
   - LED control (RGB, HOME, Consumer area)
   - HidHide integration (auto-config)
   - Bluetooth disconnect/reconnect handling
-  - System tray mode with notifications"
+  - System tray mode with notifications",
+        APP_VERSION
     );
 }
 
