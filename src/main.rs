@@ -5,10 +5,21 @@ use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use vigem_client::{Client, TargetId, XGamepad, Xbox360Wired, XNotification};
 
-const APP_VERSION: &str = "1.0.4";
+const APP_VERSION: &str = "1.1.0";
+
+/// Panic-free stderr logging for threads that keep running after the
+/// console is freed (tray mode frees the console once the tray icon is up).
+/// println!/eprintln! panic on the invalid stdout/stderr handle, and a
+/// panic whose message cannot be printed aborts the whole process —
+/// which is exactly the "double-click flashes and exits" failure mode.
+macro_rules! log_e {
+    ($($arg:tt)*) => {{
+        let _ = writeln!(io::stderr(), $($arg)*);
+    }};
+}
 
 mod hidhide;
 mod tray;
@@ -375,6 +386,22 @@ fn run_session(
         })
         .context("Failed to spawn Col03 consumer thread")?;
 
+    // Link watchdog: probes the Bluetooth link with no-op LED reports so a
+    // controller powered off without a graceful disconnect is detected in
+    // ~1s instead of minutes.
+    let watchdog_failed: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let watchdog_stop = Arc::new(AtomicBool::new(false));
+    let watchdog_handle = {
+        let failed = watchdog_failed.clone();
+        let stop = watchdog_stop.clone();
+        let path = gamepad_path.clone();
+        thread::Builder::new()
+            .name("link-watchdog".into())
+            .spawn(move || watchdog_thread(path, failed, stop))
+            .context("Failed to spawn link watchdog thread")?
+    };
+    log_e!("[Watchdog] Link probe started (interval={}ms)", LINK_PROBE_INTERVAL_MS);
+
     if let Some((_, status, _)) = &tray_state {
         let mut s = status.lock().unwrap();
         *s = tray::ConnectionStatus::Connected;
@@ -386,6 +413,11 @@ fn run_session(
     loop {
         if !running.load(Ordering::SeqCst) {
             disconnect_reason = "Col03 (consumer) read error".into();
+            break;
+        }
+
+        if let Some(reason) = watchdog_failed.lock().unwrap().clone() {
+            disconnect_reason = reason;
             break;
         }
 
@@ -419,7 +451,7 @@ fn run_session(
         };
         if let Some(r) = report_opt {
             if let Err(e) = gamepad.update(&r) {
-                eprintln!("[ViGEm] update error: {:?}", e);
+                log_e!("[ViGEm] update error: {:?}", e);
             }
         }
     }
@@ -428,6 +460,7 @@ fn run_session(
 
     running.store(false, Ordering::SeqCst);
     rumble_stop.store(true, Ordering::SeqCst);
+    watchdog_stop.store(true, Ordering::SeqCst);
 
     let _ = gamepad.update(&XGamepad::default());
     let _ = gamepad.unplug();
@@ -440,8 +473,11 @@ fn run_session(
     }
 
     drop(rumble_thread);
-    let _ = heartbeat_handle.join();
-    let _ = consumer_handle.join();
+    // Bounded joins: final rumble-stop / watchdog-probe writes can block for
+    // seconds on a dead link; teardown (and the reconnect loop) must not wait.
+    join_with_timeout(heartbeat_handle, Duration::from_secs(2));
+    join_with_timeout(consumer_handle, Duration::from_secs(2));
+    join_with_timeout(watchdog_handle, Duration::from_secs(2));
 
     Err(anyhow::anyhow!("Controller disconnected: {}", disconnect_reason))
 }
@@ -489,7 +525,7 @@ fn consumer_thread(
             }
             Ok(_) => {}
             Err(e) => {
-                eprintln!("[Col03] read error: {}, signaling disconnect", e);
+                log_e!("[Col03] read error: {}, signaling disconnect", e);
                 running.store(false, Ordering::SeqCst);
                 break;
             }
@@ -684,6 +720,66 @@ fn rumble_heartbeat_loop(
     if let Ok(dev) = output.lock() {
         let _ = dev.write(&cmd);
     }
+}
+
+// ============================================================
+// Link Watchdog
+// ------------------------------------------------------------
+// A controller powered off without a graceful Bluetooth disconnect
+// leaves a "zombie" link: Windows keeps the HID device alive for
+// minutes and reads on the idle link simply time out. Writing any
+// report forces the baseband to expect an ACK; a dead controller
+// fails the write within ~1s, which unplug path uses immediately.
+//
+// Probe = LED command with every zone 0x00 (no-op): no visual side
+// effects, never collides with rumble commands (different subtype).
+// Uses its own HID handle to avoid concurrent writes.
+// ============================================================
+const LINK_PROBE_INTERVAL_MS: u64 = 500;
+
+fn watchdog_thread(path: String, failed: Arc<Mutex<Option<String>>>, stop: Arc<AtomicBool>) {
+    let cstr = match CString::new(path.as_bytes()) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let hid = match hidapi::HidApi::new() {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    // Blocking handle (default) so a dead link surfaces as a write error.
+    let dev = match hid.open_path(&cstr) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+
+    let mut probe = [0u8; 13];
+    probe[0] = REPORT_ID_OUTPUT;
+    probe[1] = 0x01; // LED command, all zones 0x00 = no-op
+
+    loop {
+        // Sleep in small increments so stop stays responsive.
+        for _ in 0..(LINK_PROBE_INTERVAL_MS / 10) {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        if let Err(e) = dev.write(&probe) {
+            let mut f = failed.lock().unwrap();
+            *f = Some(format!("Link watchdog: write error: {}", e));
+            return;
+        }
+    }
+}
+
+/// Join a thread with a time limit: a probe/stop write blocked on a dead
+/// Bluetooth link can stall for seconds, which must not delay teardown.
+fn join_with_timeout(handle: thread::JoinHandle<()>, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while !handle.is_finished() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    // If still not finished, drop the handle (detach) instead of blocking.
 }
 
 fn find_path(hid: &hidapi::HidApi, usage_page: u16, usage: u16) -> Option<String> {

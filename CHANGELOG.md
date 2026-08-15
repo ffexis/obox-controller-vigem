@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-08-16
+
+### Added
+
+- **Link Watchdog** — detects a controller powered off without a graceful Bluetooth disconnect in ~1s instead of minutes. Windows keeps a "zombie" HID link alive for minutes on an idle connection; periodically probing the link with a no-op LED report (all zones `0x00`, no visual side effects, dedicated HID handle) forces the baseband to surface a write error as soon as the link is dead, which triggers the normal disconnect path (virtual gamepad unplugged + tray notification)
+- **Bounded thread joins (Rust)** — session teardown joins rumble-heartbeat / consumer / watchdog threads with a 2s timeout, so final writes blocked on a dead link can no longer stall the reconnect loop
+
+### Fixed
+
+- **Rust tray mode crashed on double-click launch** (regression in 1.0.4): after `FreeConsole()`, `println!` on the invalid stdout handle panicked and aborted the whole process once a controller connected. Session-thread logging now goes through a panic-free `log_e!` macro that ignores write errors
+- **Python: virtual Xbox360 was never unplugged** — `VX360Gamepad` was created once outside the session loop with no teardown; now created per-session and deterministically unplugged (via destructor after dropping the last reference) on every session end/error
+- **Python: rumble stop command could block teardown** for seconds on a dead link; now sent from a daemon thread with a 1s bound
+
 ## [1.0.4] - 2026-07-28
 
 ### Added

@@ -26,6 +26,7 @@ Usage:
 
 import sys
 import os
+import gc
 import time
 import math
 import struct
@@ -953,10 +954,83 @@ class RumbleHandler:
             cmd[0] = REPORT_ID_OUTPUT
             cmd[1] = 0x02
             cmd[2] = 0x0A
+            # Final stop command may BLOCK for seconds on a dead/zombie link
+            # (WriteFile waits for a baseband ACK that never comes), which
+            # would stall session teardown. Send it from a daemon thread and
+            # only wait briefly.
+            def _send_stop():
+                try:
+                    dev.write(bytes(cmd))
+                except Exception:
+                    pass
+            sender = threading.Thread(target=_send_stop, daemon=True)
+            sender.start()
+            sender.join(timeout=1.0)
+
+
+# ============================================================
+# Link Watchdog
+# ------------------------------------------------------------
+# A controller powered off without a graceful Bluetooth
+# disconnect leaves a "zombie" link: Windows keeps the HID
+# device alive for minutes, and reads on the idle link simply
+# time out without error. Writing any report forces the
+# baseband to expect an ACK; a dead controller fails the write
+# within ~1s, which we use to unplug the virtual gamepad
+# immediately.
+#
+# Probe = LED command with every zone set to 0x00 (no-op),
+# so it has no visual side effects and never interferes with
+# rumble commands (different subtype byte).
+# ============================================================
+LINK_PROBE_INTERVAL = 0.5  # seconds between link probes
+
+
+class LinkWatchdog:
+    """Detect dead Bluetooth links by probing with no-op LED reports."""
+
+    def __init__(self, path: str):
+        self._path = path
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        # Set (with reason) once the link is deemed dead.
+        self.failed_reason: Optional[str] = None
+
+    def start(self):
+        # Own device handle: avoids concurrent writes with the rumble
+        # heartbeat thread (same path is already opened twice elsewhere).
+        dev = hid.device()
+        dev.open_path(self._path)
+        self._dev = dev
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        print(f"[Watchdog] Link probe started (interval={LINK_PROBE_INTERVAL}s)")
+
+    def _loop(self):
+        probe = bytearray(13)
+        probe[0] = REPORT_ID_OUTPUT
+        probe[1] = 0x01  # LED command, all zones 0x00 = no-op
+        while not self._stop_event.is_set():
+            self._stop_event.wait(LINK_PROBE_INTERVAL)
+            if self._stop_event.is_set():
+                break
             try:
-                dev.write(bytes(cmd))
-            except Exception:
-                pass
+                n = self._dev.write(bytes(probe))
+                if n < 0:
+                    self.failed_reason = f"Link watchdog: write returned {n}"
+                    break
+            except Exception as e:
+                self.failed_reason = f"Link watchdog: write error: {e}"
+                break
+        try:
+            self._dev.close()
+        except Exception:
+            pass
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
 
 
 # ============================================================
@@ -1305,6 +1379,9 @@ def run_session(gamepad, deadzone_enabled: bool = True) -> str:
     rumble.set_output_device(output_dev)
     rumble.start()
 
+    watchdog = LinkWatchdog(gamepad_path)
+    watchdog.start()
+
     gp_dev = hid.device()
     gp_dev.open_path(gamepad_path)
 
@@ -1390,6 +1467,10 @@ def run_session(gamepad, deadzone_enabled: bool = True) -> str:
                 disconnect_reason = "Col03 (consumer) thread died"
                 break
 
+            if watchdog.failed_reason is not None:
+                disconnect_reason = watchdog.failed_reason
+                break
+
     except KeyboardInterrupt:
         disconnect_reason = "User interrupt"
     finally:
@@ -1397,12 +1478,17 @@ def run_session(gamepad, deadzone_enabled: bool = True) -> str:
 
         output.running = False
         consumer_thread.running = False
+        # Join workers so nothing touches the virtual gamepad after
+        # run_session returns (the caller unplug/close it immediately).
+        output.join(timeout=2.0)
+        consumer_thread.join(timeout=2.0)
 
         if disconnect_reason == "User interrupt":
             rumble._stop_event.set()
             os._exit(0)
 
         rumble.stop()
+        watchdog.stop()
 
         def _close_devices():
             for dev in (gp_dev, cs_dev, output_dev):
@@ -1508,44 +1594,65 @@ def main():
         print("\r[Main] Waiting for controller... (retry in 3s)   ", end="", flush=True)
         time.sleep(3)
     print("\r[Main] Controller detected.                        ")
-
-    # Connect to ViGEmBus (only after physical controller confirmed)
-    try:
-        gamepad = vg.VX360Gamepad()
-        print("[ViGEm] Connected to ViGEmBus driver")
-    except Exception as e:
-        print(f"[ViGEm] ERROR: Failed to connect to ViGEmBus driver: {e}")
-        print("  Please install ViGEmBus driver: https://github.com/ViGEm/ViGEmBus")
-        sys.exit(1)
     print()
 
-    # Session loop with reconnect (matching Rust's run_cli_mode)
+    # Session loop with reconnect (matching Rust's run_cli_mode).
+    # The virtual Xbox360 is created per session and unplugged on every
+    # session end / error, so a dead controller never leaves a ghost
+    # virtual device behind.
     first_attempt = True
-    last_reason = ""
     while True:
+        last_reason = ""
+        gamepad = None
         try:
+            gamepad = vg.VX360Gamepad()
+            print("[ViGEm] Virtual Xbox360 plugged in")
             last_reason = run_session(gamepad, deadzone_enabled=deadzone_enabled)
             if last_reason == "User interrupt":
                 print("\n[Main] Session ended by user, exiting.")
                 break
+            print(f"\n[Main] Session ended: {last_reason}")
+            print("[Main] Waiting 3s before reconnect...")
+        except Exception as e:
+            last_reason = str(e)
             if "not connected" in last_reason.lower():
                 if first_attempt:
                     print("[Main] Controller not connected. Waiting for pairing...")
                 else:
                     print("\r[Main] Waiting for controller... (retry in 3s)   ", end="", flush=True)
             else:
-                print(f"\n[Main] Session ended: {last_reason}")
+                print(f"\n[Main] Session error: {e}")
                 print("[Main] Waiting 3s before reconnect...")
-        except Exception as e:
-            last_reason = str(e)
-            print(f"\n[Main] Session error: {e}")
-            print("[Main] Waiting 3s before reconnect...")
+        finally:
+            # Always unplug the virtual controller when the session is over.
+            # vgamepad has no explicit unplug method: the ViGEmBus target is
+            # removed in VX360Gamepad.__del__ (vigem_target_remove + free).
+            # After run_session returned, this is the only live reference
+            # (the OutputThread that held it is gone), so dropping it triggers
+            # the destructor deterministically under CPython refcounting.
+            if gamepad is not None:
+                try:
+                    gamepad.unregister_notification()
+                except Exception:
+                    pass
+                try:
+                    gamepad = None
+                    gc.collect()
+                    print("[ViGEm] Virtual Xbox360 unplugged")
+                except Exception as e:
+                    print(f"[ViGEm] Warning: unplug failed: {e}")
 
         first_attempt = False
         time.sleep(3)
 
+        # Don't churn virtual gamepad create/remove while waiting for the
+        # physical controller to reappear.
         if "not connected" not in last_reason.lower():
             print("[Main] Attempting reconnect...")
+        while not (find_path(0x0001, 0x0005) and find_path(0x000C, 0x0001)):
+            print("\r[Main] Waiting for controller... (retry in 3s)   ", end="", flush=True)
+            time.sleep(3)
+        print("\r[Main] Controller detected.                        ")
 
     os._exit(0)
 
