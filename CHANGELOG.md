@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-08-22
+
+### Fixed
+
+- **Tray menu lag when disconnected**: driver thread now releases the `connection_status` lock before the 3s reconnection sleep, eliminating lock contention with the UI thread; UI thread additionally uses `try_lock()` as a secondary defense so the message pump can never block
+- **Tray icon tooltip**: added a base tooltip on creation (fixes blank tooltip box) and dynamic hover text reflecting connection state ("Connected (MAC)" / "Waiting for controller...")
+
 ## [1.1.0] - 2026-08-16
 
 ### Added

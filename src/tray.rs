@@ -234,6 +234,7 @@ pub fn run_tray(state: TrayState) -> Result<(), ()> {
     let _tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_icon(icon)
+        .with_tooltip("OBOX Controller")
         .build()
         .map_err(|_| ())?;
 
@@ -273,8 +274,17 @@ pub fn run_tray(state: TrayState) -> Result<(), ()> {
                 std::process::exit(0);
             }
             Event::AboutToWait => {
-                let status = status_clone.lock().unwrap().clone();
-                let mac = mac_clone.lock().unwrap().clone();
+                // try_lock: the UI thread must never block on driver-thread
+                // locks — a blocked message pump freezes the tray menu.
+                // On contention we simply keep the previous text.
+                let status = status_clone
+                    .try_lock()
+                    .map(|s| s.clone())
+                    .unwrap_or(ConnectionStatus::Disconnected);
+                let mac = mac_clone
+                    .try_lock()
+                    .map(|m| m.clone())
+                    .unwrap_or_default();
 
                 let status_text = match status {
                     ConnectionStatus::Disconnected => "Status: Disconnected",
@@ -292,6 +302,16 @@ pub fn run_tray(state: TrayState) -> Result<(), ()> {
                 status_item.set_text(status_text);
                 mac_item.set_text(&mac_text);
                 deadzone_item.set_text(deadzone_text);
+
+                // Dynamic tooltip: hover state at a glance.
+                let tooltip = match status {
+                    ConnectionStatus::Connected if !mac.is_empty() => {
+                        format!("OBOX Controller — Connected ({})", mac)
+                    }
+                    ConnectionStatus::Connected => "OBOX Controller — Connected".to_string(),
+                    _ => "OBOX Controller — Waiting for controller...".to_string(),
+                };
+                let _ = _tray_icon.set_tooltip(Some(&tooltip));
 
                 let connected = status == ConnectionStatus::Connected;
                 led_submenu.set_enabled(connected);

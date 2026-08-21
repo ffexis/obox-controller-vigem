@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use vigem_client::{Client, TargetId, XGamepad, Xbox360Wired, XNotification};
 
-const APP_VERSION: &str = "1.1.0";
+const APP_VERSION: &str = "1.1.1";
 
 /// Panic-free stderr logging for threads that keep running after the
 /// console is freed (tray mode frees the console once the tray icon is up).
@@ -281,8 +281,12 @@ fn run_tray_mode() -> Result<()> {
                         tray::send_toast("OBOX Controller", "Waiting for connection...");
                     }
                     first_attempt = false;
-                    let mut s = status_clone.lock().unwrap();
-                    *s = tray::ConnectionStatus::Connecting;
+                    {
+                        // Scope the guard: never hold the status lock across
+                        // the 3s sleep — the tray UI thread locks it too.
+                        let mut s = status_clone.lock().unwrap();
+                        *s = tray::ConnectionStatus::Connecting;
+                    }
                     thread::sleep(Duration::from_secs(3));
                 }
             }
