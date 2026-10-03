@@ -46,10 +46,48 @@ except ImportError:
     sys.exit(1)
 
 # ---- vgamepad ----
+# vgamepad connects to the ViGEmBus driver at import time (via a module-level
+# global VBus). If the driver is not installed that connection fails and raises
+# a plain Exception — not ImportError — which would otherwise kill the process
+# silently, especially when launched by double-click where the console window
+# vanishes before the traceback can be read.
+VIGEM_DOWNLOAD_URL = "https://github.com/nefarius/ViGEmBus/releases"
+
+
+def report_vigem_missing(detail: str = "") -> None:
+    """Print (and on Windows, show) a friendly 'ViGEmBus missing' prompt."""
+    print("[ViGEm] ViGEmBus driver not found.")
+    print("        This program needs the ViGEmBus virtual gamepad driver to")
+    print("        present the OBOX controller to Windows as an Xbox 360 gamepad.")
+    print("        Please install ViGEmBus, then start the program again:")
+    print(f"        {VIGEM_DOWNLOAD_URL}")
+    if detail:
+        print(f"        (detail: {detail})")
+
+    # A double-clicked script's console closes instantly, so also raise a
+    # dialog the user cannot miss. Best-effort: never let this itself crash.
+    if os.name == "nt":
+        try:
+            msg = (
+                "ViGEmBus driver not found.\n\n"
+                "This program needs the ViGEmBus virtual gamepad driver to\n"
+                "present the OBOX controller to Windows as an Xbox 360 gamepad.\n\n"
+                "Please install ViGEmBus, then start the program again:\n"
+                f"{VIGEM_DOWNLOAD_URL}\n\n"
+                "Note: a restart may be required after installing."
+            )
+            ctypes.windll.user32.MessageBoxW(0, msg, "OBOX Controller Driver", 0x10)
+        except Exception:
+            pass
+
+
 try:
     import vgamepad as vg
 except ImportError:
     print("[ERROR] Missing vgamepad: pip install --no-build-isolation vgamepad")
+    sys.exit(1)
+except Exception as e:
+    report_vigem_missing(str(e))
     sys.exit(1)
 
 # ---- pynput (keyboard hook) ----
@@ -1325,7 +1363,7 @@ def debug_output() -> None:
 # ============================================================
 def print_usage():
     print(
-        "OBOX Bluetooth Controller -> ViGEmBus Xbox360 (Python v1.0)\n"
+        "OBOX Bluetooth Controller -> ViGEmBus Xbox360 (Python v1.1.2)\n"
         "\n"
         "Usage:\n"
         "  obox_middleware.py                     Run in CLI mode (default)\n"
@@ -1572,7 +1610,7 @@ def main():
     app_path = sys.executable
 
     # Run CLI mode
-    print("OBOX Bluetooth Controller -> ViGEmBus Xbox360 (Python v1.0)")
+    print("OBOX Bluetooth Controller -> ViGEmBus Xbox360 (Python v1.1.2)")
     print("=" * 55)
 
     deadzone_enabled = not args.no_deadzone

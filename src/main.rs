@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use vigem_client::{Client, TargetId, XGamepad, Xbox360Wired, XNotification};
 
-const APP_VERSION: &str = "1.1.1";
+const APP_VERSION: &str = "1.1.2";
 
 /// Panic-free stderr logging for threads that keep running after the
 /// console is freed (tray mode frees the console once the tray icon is up).
@@ -125,6 +125,22 @@ fn show_error_dialog(message: &str) {
     }
 }
 
+const VIGEM_DOWNLOAD_URL: &str = "https://github.com/nefarius/ViGEmBus/releases";
+
+/// Actionable text shown when the ViGEmBus driver is missing, so the user
+/// gets a clear prompt instead of a silent exit.
+fn vigem_missing_message() -> String {
+    format!(
+        "ViGEmBus driver not found.\n\n\
+         This program needs the ViGEmBus virtual gamepad driver to present\n\
+         the OBOX controller to Windows as an Xbox 360 gamepad.\n\n\
+         Please install ViGEmBus, then start the program again:\n\
+         {}\n\n\
+         Note: a restart may be required after installing.",
+        VIGEM_DOWNLOAD_URL
+    )
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("");
@@ -166,10 +182,26 @@ fn main() -> Result<()> {
 
     let is_cli_mode = has_cli_arg || !cfg!(windows) || !is_double_clicked();
 
+    // ViGEmBus is required by both run modes, so probe it before anything else.
+    // A missing driver must surface as a clear, visible prompt: a double-clicked
+    // build would otherwise just flash its console window and vanish. On Windows
+    // we therefore always raise a dialog (the console may close instantly),
+    // in addition to the stderr message for terminal users.
+    let client = match Client::connect() {
+        Ok(client) => client,
+        Err(_) => {
+            let msg = vigem_missing_message();
+            eprintln!("[ViGEm] {}", msg);
+            #[cfg(windows)]
+            show_error_dialog(&msg);
+            std::process::exit(1);
+        }
+    };
+
     if is_cli_mode {
-        run_cli_mode(no_deadzone)
+        run_cli_mode(no_deadzone, client)
     } else {
-        let result = run_tray_mode();
+        let result = run_tray_mode(client);
         if let Err(e) = &result {
             let msg = format!("Tray mode failed: {}", e);
             #[cfg(windows)]
@@ -181,9 +213,10 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_cli_mode(no_deadzone: bool) -> Result<()> {
+fn run_cli_mode(no_deadzone: bool, client: Client) -> Result<()> {
     println!("OBOX Bluetooth Controller -> ViGEmBus Xbox360 (Rust v{})", APP_VERSION);
     println!("==========================================================");
+    println!("[ViGEm] Connected to ViGEmBus driver");
 
     let deadzone_enabled = Arc::new(AtomicBool::new(!no_deadzone));
     if !no_deadzone {
@@ -213,10 +246,6 @@ fn run_cli_mode(no_deadzone: bool) -> Result<()> {
         thread::sleep(Duration::from_secs(3));
     }
     println!("\r[Main] Controller detected.                        ");
-
-    let client = Client::connect().context("Failed to connect to ViGEmBus driver")?;
-    println!("[ViGEm] Connected to ViGEmBus driver");
-    println!();
 
     let mut first_attempt = true;
     loop {
@@ -251,9 +280,7 @@ fn run_cli_mode(no_deadzone: bool) -> Result<()> {
     }
 }
 
-fn run_tray_mode() -> Result<()> {
-    let client = Client::connect().context("Failed to connect to ViGEmBus driver")?;
-
+fn run_tray_mode(client: Client) -> Result<()> {
     if let Err(e) = hidhide::ensure_enabled() {
         eprintln!("[HidHide] WARN: {}", e);
     }

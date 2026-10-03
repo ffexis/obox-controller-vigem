@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-10-03
+
+### Fixed
+
+- **Silent exit when ViGEmBus is not installed** — both implementations now detect a missing ViGEmBus driver and show a clear, actionable prompt (with the download link) instead of terminating silently:
+  - **Rust**: ViGEmBus is probed before anything else runs; on failure the reason is printed to stderr and, on Windows, raised in a message box. Previously a double-clicked build only flashed its console window and vanished, leaving the user with no explanation
+  - **Python**: `vgamepad` connects to ViGEmBus at import time and raises a plain `Exception` (not `ImportError`) when the driver is missing, which escaped the import guard and killed the process silently. It is now caught and reported via a console message plus a Windows message box
+
 ## [1.1.1] - 2026-08-22
 
 ### Fixed
