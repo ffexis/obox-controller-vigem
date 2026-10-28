@@ -32,7 +32,7 @@ The gamepad is built around the **Broadcom BCM20733** Bluetooth SoC (die marking
 - **LED control** — RGB LED, HOME button LED, and consumer area LED (HID Output Report 0xB3)
 - **[HidHide](https://github.com/nefarius/HidHide) integration** — auto-registers the app and hides the physical gamepad so only the virtual Xbox 360 is visible to games; idempotent config, conservative cloak-state handling
 - **Bluetooth disconnect / auto-reconnect** — detects HID read errors, unplugs the virtual Xbox 360, waits, and reconnects when the controller reappears; also waits at startup if the controller isn't paired yet
-- **System tray mode** — runs in background with tray icon, shows connection status/MAC address, LED control menu, deadzone toggle, and Windows notifications for connection events
+- **System tray mode** — runs in background with tray icon, shows connection status/MAC address, LED control menu, deadzone toggle, a `Block PrintScreen Key` toggle, and Windows notifications for connection events
 - **Debug modes** — `--debug-keys` (real-time Col01/Col03 input dump) and `--debug-output` (interactive vibration/LED test menu)
 - **CLI subcommands** — `--hidhide-status` / `--hidhide-disable` for inspecting and undoing HidHide configuration
 
@@ -93,7 +93,7 @@ obox-controller-driver -h, --help         Show help
 When launched by double-clicking the executable (no console), the driver runs in tray mode:
 
 - **Windows notifications** — shows "Waiting for connection", "Connected successfully!", and "Disconnected"
-- **Tray menu** — displays connection status, controller MAC address, LED control options, and deadzone toggle
+- **Tray menu** — displays connection status (refreshed live while the menu is open), controller MAC address, deadzone toggle, `Block PrintScreen Key` toggle, and LED control options
 - **LED control** — RGB status LED (Red/Green/Blue ON/OFF), Consumer area LED (ON/OFF), HOME button LED (ON/OFF)
 - **Single instance** — prevents multiple instances from running simultaneously
 

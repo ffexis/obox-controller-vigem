@@ -32,7 +32,7 @@
 - **LED 控制** — RGB LED、HOME 键指示灯、消费区 LED（HID Output Report 0xB3）
 - **[HidHide](https://github.com/nefarius/HidHide) 集成** — 自动注册本应用并隐藏物理手柄，使游戏只能看到虚拟 Xbox 360；配置幂等，保守处理全局 cloak 状态
 - **蓝牙断开 / 自动重连** — 检测 HID 读取错误，断开虚拟 Xbox 360，等待手柄重新出现后自动重连；启动时若手柄未配对也会进入等待状态
-- **系统托盘模式** — 后台运行，托盘图标显示连接状态/MAC地址，LED控制菜单，Windows通知提示连接事件，托盘菜单支持运行时切换摇杆死区开关
+- **系统托盘模式** — 后台运行，托盘图标显示连接状态/MAC地址，LED控制菜单，Windows通知提示连接事件，托盘菜单支持运行时切换摇杆死区开关与 `Block PrintScreen Key` 开关
 - **调试模式** — `--debug-keys`（实时打印 Col01/Col03 输入）和 `--debug-output`（交互式振动/LED 测试菜单）
 - **CLI 子命令** — `--hidhide-status` / `--hidhide-disable` 用于查看和撤销 HidHide 配置
 
@@ -93,7 +93,7 @@ obox-controller-driver -h, --help         显示帮助
 双击可执行文件启动（无控制台）时，驱动以托盘模式运行：
 
 - **Windows 通知** — 显示"Waiting for connection"、"Connected successfully!"和"Disconnected"
-- **托盘菜单** — 显示连接状态、手柄MAC地址、LED控制选项，支持死区开关
+- **托盘菜单** — 显示连接状态（菜单打开期间实时刷新）、手柄MAC地址、死区开关、`Block PrintScreen Key` 开关、LED控制选项
 - **LED 控制** — RGB状态灯（红/绿/蓝 ON/OFF）、消费区LED（ON/OFF）、HOME键LED（ON/OFF）
 - **单例运行** — 防止多个实例同时运行
 

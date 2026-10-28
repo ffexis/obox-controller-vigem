@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use vigem_client::{Client, TargetId, XGamepad, Xbox360Wired, XNotification};
 
-const APP_VERSION: &str = "1.1.2";
+const APP_VERSION: &str = "1.2.0";
 
 /// Panic-free stderr logging for threads that keep running after the
 /// console is freed (tray mode frees the console once the tray icon is up).
@@ -320,7 +320,7 @@ fn run_tray_mode(client: Client) -> Result<()> {
         }
     });
 
-    // 托盘模式运行（控制台在 tray::run_tray 内部托盘创建成功后释放）
+    // Run in tray mode (the console is freed inside tray::run_tray once the tray icon is created)
     tray::run_tray(tray::TrayState {
         output_device,
         connection_status,

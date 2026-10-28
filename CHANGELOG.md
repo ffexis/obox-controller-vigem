@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-28
+
+### Added
+
+- **Tray menu: `Block PrintScreen Key` toggle** — a checkable menu item that reads and writes `HKCU\Control Panel\Keyboard\PrintScreenKeyForSnippingEnabled`, so the PrintScreen key can be freed from the Windows Snipping Tool without leaving the tray. The check state follows the registry, including changes made from Windows Settings
+- **Live tray menu content** — while the menu is open, connection status, MAC address, deadzone state and the LED submenu's enabled state are refreshed from the driver (~100 ms) instead of being frozen at pop-up time
+
+### Fixed
+
+- **Tray menu froze together with the whole taskbar** — the popup menu's modal loop (`TrackPopupMenu`) was running on winit's event-loop thread. winit registers its message-target window with `RIDEV_DEVNOTIFY`, so a controller connecting/disconnecting made it continuously post wake-up messages to that thread; inside the modal loop those posted messages are consumed endlessly, which starves hardware mouse input and `WM_TIMER` (diagnosed from a message-timing log showing `WM_TIMER` stopping at the first `WM_DEVICECHANGE`). The menu is now built, owned and pumped by a **dedicated menu thread** with a plain Win32 message loop, so the winit thread is no longer blocked and input is no longer starved
+- **Tray menu could not be dismissed by clicking outside** — the notify-icon owner window supplied by `tray-icon` is invisible, so Windows never treats the popup as a real foreground menu; the menu's modal loop never returned and its mouse capture blocked the taskbar. The menu now uses its own visible, activatable host window, posts `WM_NULL` after `TrackPopupMenu` (the standard notification-icon menu pattern), and a watcher closes it when the foreground window changes
+- **Tray tooltip no longer spams `Shell_NotifyIcon`** — the tooltip is now updated only when the connection state or MAC actually changes; previously every idle event-loop tick issued a synchronous `Shell_NotifyIconW(NIM_MODIFY)` call to Explorer
+
+### Changed
+
+- **Menu status wording** — the not-connected state now reads `Status: Waiting for connection` instead of `Status: Connecting...`
+- **Source comments translated to English** (`src/main.rs`, `src/tray.rs`, `src/hidhide.rs`)
+
 ## [1.1.2] - 2026-10-03
 
 ### Fixed
